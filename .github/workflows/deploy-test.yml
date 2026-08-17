@@ -25,6 +25,8 @@ jobs:
       url: ${{ vars.APP_URL }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
       - name: Deploy to test server
         uses: ./.github/actions/deploy
         with:

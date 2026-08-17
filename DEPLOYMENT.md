@@ -50,8 +50,45 @@ each other too.
 - Docker Engine + Compose plugin.
 - A dedicated deploy user (you created this) whose login shell can run `docker`
   (member of the `docker` group).
-- Your reverse proxy (nginx/Traefik/…) forwarding the public HTTPS hostnames to
-  `127.0.0.1:<APP_PORT>` for each environment.
+- Your reverse proxy (nginx/Traefik/Caddy/…) forwarding the public HTTPS
+  hostnames to `127.0.0.1:<APP_PORT>` for each environment. If you don't have one
+  yet, see **Reverse proxy (Caddy)** below.
+
+### 1a. Reverse proxy (Caddy)
+
+The app containers publish on `127.0.0.1:${APP_PORT}` only — they are **not**
+reachable from the internet directly. A host-level reverse proxy terminates TLS
+on `:443` and forwards to those loopback ports. Telegram only calls webhooks on
+ports **443, 80, 88, or 8443**, so the public side must be one of these
+(normally 443 at the proxy); `APP_PORT` is internal and unrestricted.
+
+A ready-to-edit config lives at [`deploy/Caddyfile`](deploy/Caddyfile). Caddy is
+recommended because it fetches and auto-renews Let's Encrypt certs with no
+certbot/cron. To set it up:
+
+1. **DNS** — create A records pointing each hostname at the server's public IP
+   (e.g. `tme-test` and `tme`). Verify with `dig +short tme-test.example.com`
+   *before* the next step (Let's Encrypt needs it to resolve).
+2. **Install Caddy** (Debian/Ubuntu):
+   ```bash
+   sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+   sudo apt update && sudo apt install -y caddy
+   ```
+3. **Configure** — edit `deploy/Caddyfile`, replacing the placeholder hostnames
+   and confirming the `APP_PORT`s match your environments, then:
+   ```bash
+   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+   sudo caddy validate --config /etc/caddy/Caddyfile
+   sudo systemctl reload caddy
+   ```
+4. Open ports **80 and 443** in the firewall / cloud security group (80 is
+   needed for the ACME challenge).
+5. Verify end to end: `curl -fsS https://tme-test.example.com/health`.
+
+> This proxy runs on the host, outside Docker Compose — the CI deploy does **not**
+> install or manage it. Set it up once by hand.
 
 ### 2. GitHub Environments
 
@@ -176,6 +213,6 @@ head`, `uv run tme-api`.
 - [ ] `DATABASE_URL` host is `postgres` and `REDIS_URL` host is `redis` (the deploy hard-fails otherwise).
 - [ ] `APP_PORT` chosen per env and **confirmed free** (`sudo ss -ltnp | grep :<port>`).
 - [ ] Deploy user is in the `docker` group and its public key is authorized.
-- [ ] Reverse proxy forwards each public hostname → `127.0.0.1:<APP_PORT>`.
+- [ ] Reverse proxy forwards each public hostname → `127.0.0.1:<APP_PORT>` (see **Reverse proxy (Caddy)** / [`deploy/Caddyfile`](deploy/Caddyfile)).
 - [ ] Push to `main` → watch **Deploy • test** go green.
 - [ ] Tag `vX.Y.Z` → approve → **Deploy • production**.

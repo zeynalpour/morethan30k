@@ -57,8 +57,6 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # Stock GitHub-hosted runners ship rsync, but self-hosted / container
-        # runners often don't. Install only when missing (idempotent, quiet).
         if ! command -v rsync >/dev/null 2>&1; then
           echo "rsync not found — installing"
           sudo apt-get update && sudo apt-get install -y rsync

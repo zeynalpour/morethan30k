@@ -1,0 +1,34 @@
+# TME reverse proxy — Caddy
+# =============================================================================
+# This runs on the HOST (not in Docker Compose). Caddy terminates TLS on :443
+# and forwards to the app containers, which publish on 127.0.0.1:${APP_PORT}
+# only (see docker-compose.prod.yml: "127.0.0.1:${APP_PORT}:8000").
+#
+# Caddy fetches and auto-renews Let's Encrypt certs on first request — no
+# certbot, no cron. Ports 80 AND 443 must be open in the firewall (80 is used
+# for the ACME challenge).
+#
+#   Telegram --443--> Caddy --> 127.0.0.1:8081  (tme-test, APP_PORT=8081)
+#                          \--> 127.0.0.1:8080  (tme-prod, APP_PORT=8080)
+#
+# WEBHOOK_BASE_URL (GitHub Environment Variable) must equal each hostname below,
+# e.g. https://tme-test.example.com  —  the app appends /webhook/{token}.
+#
+# Setup:
+#   1. Replace the two hostnames below with your real domain.
+#   2. sudo caddy validate --config /etc/caddy/Caddyfile
+#   3. sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# NOTE: APP_PORTs below must match the APP_PORT you set per environment. The
+# defaults (8081 test / 8080 prod) come from docker-compose.prod.yml.
+# =============================================================================
+
+# --- TEST -------------------------------------------------------------------
+tme-test.izhex.com {
+	reverse_proxy 127.0.0.1:8081
+}
+
+# --- PRODUCTION -------------------------------------------------------------
+tme.izhex.com {
+	reverse_proxy 127.0.0.1:8080
+}
