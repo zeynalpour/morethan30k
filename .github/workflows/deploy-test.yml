@@ -1,0 +1,43 @@
+name: Deploy • test
+
+# Every push to main: run CI, then auto-deploy to the TEST environment
+# (test bot token). Uses the `test` GitHub Environment's scoped secrets/vars.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_reusable-ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: test
+      url: ${{ vars.APP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to test server
+        uses: ./.github/actions/deploy
+        with:
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh_port: ${{ vars.SSH_PORT || '22' }}
+          known_hosts: ${{ secrets.KNOWN_HOSTS }}
+          main_bot_token: ${{ secrets.BOT_TOKEN }}
+          webhook_base_url: ${{ vars.WEBHOOK_BASE_URL }}
+          webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          database_url: ${{ secrets.DATABASE_URL }}
+          redis_url: ${{ secrets.REDIS_URL }}
+          deploy_path: ${{ vars.DEPLOY_PATH || 'tme-test' }}
+          compose_project: ${{ vars.COMPOSE_PROJECT || 'tme-test' }}
+          app_port: ${{ vars.APP_PORT || '8081' }}

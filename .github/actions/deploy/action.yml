@@ -1,0 +1,211 @@
+name: "Deploy TME over SSH"
+description: >-
+  Build the .env from individual environment secrets, rsync the app to the
+  server, and (re)launch its isolated Docker Compose stack. Every docker command
+  is scoped to a per-environment compose project, so the host's other stacks are
+  never touched.
+
+inputs:
+  ssh_host:
+    description: "Server hostname or IP."
+    required: true
+  ssh_user:
+    description: "Dedicated SSH/deploy user."
+    required: true
+  ssh_private_key:
+    description: "Private SSH key for the deploy user."
+    required: true
+  ssh_port:
+    description: "SSH port."
+    required: false
+    default: "22"
+  known_hosts:
+    description: "Contents for ~/.ssh/known_hosts. If empty, falls back to ssh-keyscan (TOFU, less secure)."
+    required: false
+    default: ""
+  # --- application config (assembled into .env on the server) ---
+  main_bot_token:
+    description: "Controller bot token (your BOT_TOKEN secret)."
+    required: true
+  webhook_base_url:
+    description: "Public HTTPS origin Telegram calls back on (WEBHOOK_BASE_URL variable)."
+    required: true
+  webhook_secret:
+    description: "Telegram webhook secret token."
+    required: true
+  database_url:
+    description: "SQLAlchemy async URL; host MUST be the dedicated 'postgres' service."
+    required: true
+  redis_url:
+    description: "Redis URL; host MUST be the dedicated 'redis' service."
+    required: true
+  # --- placement / isolation ---
+  deploy_path:
+    description: "Target directory on the server (relative to $HOME, or absolute)."
+    required: true
+  compose_project:
+    description: "docker compose -p project name (namespaces containers/volumes/network)."
+    required: true
+  app_port:
+    description: "Host loopback port to publish the app on (must be unique per stack)."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure SSH
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh_private_key }}
+        KNOWN_HOSTS: ${{ inputs.known_hosts }}
+        SSH_HOST: ${{ inputs.ssh_host }}
+        SSH_PORT: ${{ inputs.ssh_port }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+        chmod 600 ~/.ssh/id_deploy
+        if [ -n "$KNOWN_HOSTS" ]; then
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+        else
+          echo "::warning::KNOWN_HOSTS not set — using ssh-keyscan (trust-on-first-use). Set a KNOWN_HOSTS secret to harden this."
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+        fi
+        chmod 600 ~/.ssh/known_hosts
+
+    - name: Sync code to server
+      shell: bash
+      env:
+        SSH_USER: ${{ inputs.ssh_user }}
+        SSH_HOST: ${{ inputs.ssh_host }}
+        SSH_PORT: ${{ inputs.ssh_port }}
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+      run: |
+        set -euo pipefail
+        ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "mkdir -p '$DEPLOY_PATH'"
+        rsync -az --delete \
+          --exclude '.git' --exclude '.venv' --exclude '.env' \
+          --exclude '__pycache__' --exclude '.github' \
+          --exclude '.ruff_cache' --exclude '.pytest_cache' \
+          -e "ssh -i ~/.ssh/id_deploy -p $SSH_PORT" \
+          ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+
+    - name: Build & upload .env (with safety guards)
+      shell: bash
+      env:
+        SSH_USER: ${{ inputs.ssh_user }}
+        SSH_HOST: ${{ inputs.ssh_host }}
+        SSH_PORT: ${{ inputs.ssh_port }}
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+        MAIN_BOT_TOKEN: ${{ inputs.main_bot_token }}
+        WEBHOOK_BASE_URL: ${{ inputs.webhook_base_url }}
+        WEBHOOK_SECRET: ${{ inputs.webhook_secret }}
+        DATABASE_URL: ${{ inputs.database_url }}
+        REDIS_URL: ${{ inputs.redis_url }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${WEBHOOK_BASE_URL:-}" ]; then
+          echo "::error::WEBHOOK_BASE_URL is empty. Add it as a per-environment Variable (Settings → Environments → <env> → Variables)."
+          exit 1
+        fi
+
+        # Normalize to the asyncpg driver the app/alembic require.
+        DB="$DATABASE_URL"
+        case "$DB" in
+          postgresql+asyncpg://*) : ;;
+          postgresql://*) DB="postgresql+asyncpg://${DB#postgresql://}" ;;
+          postgres://*)   DB="postgresql+asyncpg://${DB#postgres://}" ;;
+          *) echo "::error::DATABASE_URL must be a postgres URL"; exit 1 ;;
+        esac
+
+        # Parse credentials out of the URL (assumes password has no literal '@').
+        rest="${DB#*://}"                 # user:pass@host:port/db
+        creds="${rest%@*}"                # user:pass
+        hostportdb="${rest##*@}"          # host:port/db
+        PG_USER="${creds%%:*}"
+        PG_PASS="${creds#*:}"
+        hostport="${hostportdb%%/*}"      # host:port
+        dbpath="${hostportdb#*/}"         # db[?params]
+        PG_DB="${dbpath%%\?*}"
+        PG_HOST="${hostport%%:*}"
+
+        # SAFETY GUARD: TME must talk ONLY to its own dedicated containers.
+        # This is what prevents TME from ever pointing at another app's DB.
+        if [ "$PG_HOST" != "postgres" ]; then
+          echo "::error::DATABASE_URL host must be 'postgres' (TME's dedicated container), got '$PG_HOST'. Refusing to deploy."
+          exit 1
+        fi
+        rrest="${REDIS_URL#*://}"
+        rhostportdb="${rrest##*@}"
+        rhostport="${rhostportdb%%/*}"
+        R_HOST="${rhostport%%:*}"
+        if [ "$R_HOST" != "redis" ]; then
+          echo "::error::REDIS_URL host must be 'redis' (TME's dedicated container), got '$R_HOST'. Refusing to deploy."
+          exit 1
+        fi
+
+        ENVFILE="$(cat <<EOF
+        MAIN_BOT_TOKEN=$MAIN_BOT_TOKEN
+        WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL
+        WEBHOOK_SECRET=$WEBHOOK_SECRET
+        DATABASE_URL=$DB
+        REDIS_URL=$REDIS_URL
+        CONFIG_CACHE_TTL=3600
+        LOG_LEVEL=INFO
+        POSTGRES_USER=$PG_USER
+        POSTGRES_PASSWORD=$PG_PASS
+        POSTGRES_DB=$PG_DB
+        EOF
+        )"
+        printf '%s\n' "$ENVFILE" | ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+          "umask 077 && cat > '$DEPLOY_PATH/.env'"
+
+    - name: Launch / update stack
+      shell: bash
+      env:
+        SSH_USER: ${{ inputs.ssh_user }}
+        SSH_HOST: ${{ inputs.ssh_host }}
+        SSH_PORT: ${{ inputs.ssh_port }}
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+        COMPOSE_PROJECT: ${{ inputs.compose_project }}
+        APP_PORT: ${{ inputs.app_port }}
+      run: |
+        set -euo pipefail
+        ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+          DEPLOY_PATH="$DEPLOY_PATH" COMPOSE_PROJECT="$COMPOSE_PROJECT" APP_PORT="$APP_PORT" \
+          'bash -euo pipefail -s' <<'REMOTE'
+        cd "$DEPLOY_PATH"
+        # -p scopes containers, network AND volumes to this project only.
+        # --remove-orphans affects THIS project exclusively — never other stacks.
+        docker compose -p "$COMPOSE_PROJECT" --env-file .env -f docker-compose.prod.yml \
+          up -d --build --remove-orphans
+        # Prune only images left dangling by THIS project (never a global prune).
+        docker image prune -f --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" || true
+        REMOTE
+
+    - name: Health check
+      shell: bash
+      env:
+        SSH_USER: ${{ inputs.ssh_user }}
+        SSH_HOST: ${{ inputs.ssh_host }}
+        SSH_PORT: ${{ inputs.ssh_port }}
+        DEPLOY_PATH: ${{ inputs.deploy_path }}
+        COMPOSE_PROJECT: ${{ inputs.compose_project }}
+        APP_PORT: ${{ inputs.app_port }}
+      run: |
+        set -euo pipefail
+        ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+          DEPLOY_PATH="$DEPLOY_PATH" COMPOSE_PROJECT="$COMPOSE_PROJECT" APP_PORT="$APP_PORT" \
+          'bash -euo pipefail -s' <<'REMOTE'
+        for i in $(seq 1 30); do
+          if curl -fsS "http://127.0.0.1:${APP_PORT}/health" >/dev/null 2>&1; then
+            echo "TME is healthy on 127.0.0.1:${APP_PORT}"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::Health check failed after ~60s"
+        cd "$DEPLOY_PATH" && docker compose -p "$COMPOSE_PROJECT" logs --tail=100 app || true
+        exit 1
+        REMOTE

@@ -1,0 +1,46 @@
+name: Deploy • production
+
+# Production deploy. Triggered by pushing a version tag (v1.2.3) — so you
+# promote the EXACT commit already tested on `test` — or manually via the
+# Actions tab. The `production` GitHub Environment should have a required
+# reviewer configured, which pauses the `deploy` job for manual approval.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_reusable-ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: production # ← attach a required-reviewer rule here for the approval gate
+      url: ${{ vars.APP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to production server
+        uses: ./.github/actions/deploy
+        with:
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh_port: ${{ vars.SSH_PORT || '22' }}
+          known_hosts: ${{ secrets.KNOWN_HOSTS }}
+          main_bot_token: ${{ secrets.BOT_TOKEN }}
+          webhook_base_url: ${{ vars.WEBHOOK_BASE_URL }}
+          webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          database_url: ${{ secrets.DATABASE_URL }}
+          redis_url: ${{ secrets.REDIS_URL }}
+          deploy_path: ${{ vars.DEPLOY_PATH || 'tme-prod' }}
+          compose_project: ${{ vars.COMPOSE_PROJECT || 'tme-prod' }}
+          app_port: ${{ vars.APP_PORT || '8080' }}

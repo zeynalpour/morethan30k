@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repo and on checkout. This project is
+# deployed to Linux and its shell heredocs / Dockerfile / YAML must not carry
+# CRLF, which would break `bash -s` remote execution and container startup.
+* text=auto eol=lf
+
+# Explicitly binary (never touch):
+*.png binary
+*.jpg binary
+*.ico binary

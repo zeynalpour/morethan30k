@@ -1,0 +1,76 @@
+# ============================================================================
+# TME production/test stack — fully isolated from any other app on the host.
+#
+# Isolation is enforced at deploy time by:
+#   * A unique compose PROJECT name per environment (tme-test / tme-prod),
+#     passed via `docker compose -p`. Compose only ever touches resources it
+#     namespaces under that project — never your other 20k-user stacks.
+#   * A dedicated network, and dedicated named volumes (compose prefixes both
+#     with the project name → tme-prod_pgdata, tme-test_pgdata, ...).
+#   * Postgres and Redis publish NO host ports — they are reachable only on the
+#     internal compose network, so they cannot collide with anything else.
+#   * Only the app port is published, bound to 127.0.0.1, for the host's
+#     existing reverse proxy to forward to. Host port = ${APP_PORT}.
+#
+# Run (the deploy workflow does this for you):
+#   APP_PORT=8081 docker compose -p tme-test  --env-file .env -f docker-compose.prod.yml up -d --build
+#   APP_PORT=8080 docker compose -p tme-prod  --env-file .env -f docker-compose.prod.yml up -d --build
+# ============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Runtime config (tokens, DB/Redis URLs, secrets) comes from .env, which the
+    # deploy step writes on the server from the environment's DOTENV secret.
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Bind to loopback only: the host reverse proxy terminates TLS and forwards.
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB are read from .env and
+    # MUST match the credentials embedded in DATABASE_URL.
+    env_file: .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No `ports:` — intentionally not exposed to the host.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tme} -d ${POSTGRES_DB:-tme}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    # No `ports:` — internal network only.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+# Named volumes are auto-prefixed with the compose project name, so test and
+# prod (and any other stack) never share data.
+volumes:
+  pgdata:
+  redisdata:
