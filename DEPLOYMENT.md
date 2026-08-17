@@ -54,38 +54,55 @@ each other too.
   hostnames to `127.0.0.1:<APP_PORT>` for each environment. If you don't have one
   yet, see **Reverse proxy (Caddy)** below.
 
-### 1a. Reverse proxy (Caddy)
+### 1a. Reverse proxy (Caddy, behind Cloudflare)
 
 The app containers publish on `127.0.0.1:${APP_PORT}` only — they are **not**
 reachable from the internet directly. A host-level reverse proxy terminates TLS
-on `:443` and forwards to those loopback ports. Telegram only calls webhooks on
-ports **443, 80, 88, or 8443**, so the public side must be one of these
-(normally 443 at the proxy); `APP_PORT` is internal and unrestricted.
+and forwards to those loopback ports. Telegram only calls webhooks on ports
+**443, 80, 88, or 8443**, so the public side must be one of these (normally 443
+at Cloudflare); `APP_PORT` is internal and unrestricted.
 
-A ready-to-edit config lives at [`deploy/Caddyfile`](deploy/Caddyfile). Caddy is
-recommended because it fetches and auto-renews Let's Encrypt certs with no
-certbot/cron. To set it up:
+`izhex.com` is **proxied through Cloudflare** (orange cloud). The request path is:
 
-1. **DNS** — create A records pointing each hostname at the server's public IP
-   (e.g. `tme-test` and `tme`). Verify with `dig +short tme-test.example.com`
-   *before* the next step (Let's Encrypt needs it to resolve).
-2. **Install Caddy** (Debian/Ubuntu):
+```
+Telegram ──▶ Cloudflare edge (TLS) ──▶ server: Caddy (TLS) ──▶ 127.0.0.1:${APP_PORT}
+```
+
+Because Cloudflare's proxy intercepts the ACME challenge, Caddy **cannot** use
+Let's Encrypt here. Instead we give Caddy a **Cloudflare Origin Certificate**
+(15-year, no renewal) and set Cloudflare's SSL/TLS mode to **Full (strict)**.
+A ready-to-edit config lives at [`deploy/Caddyfile`](deploy/Caddyfile).
+
+1. **DNS** — in Cloudflare, create A records `tme-test` and `tme` → the server's
+   public IP, **Proxied (orange cloud)**. (Cloudflare may return its own edge IP
+   for `dig`; that's expected when proxied.)
+2. **Origin certificate** — Cloudflare → **SSL/TLS → Origin Server → Create
+   Certificate** (hostnames `izhex.com`, `*.izhex.com`). Install on the server:
+   ```bash
+   sudo install -d -m 755 /etc/caddy/certs
+   sudo tee /etc/caddy/certs/izhex.pem >/dev/null   # paste the certificate
+   sudo tee /etc/caddy/certs/izhex.key >/dev/null   # paste the private key
+   sudo chmod 600 /etc/caddy/certs/izhex.key
+   ```
+3. **SSL/TLS mode** — Cloudflare → **SSL/TLS → Overview → Full (strict)**. Turn
+   on **Always Use HTTPS** so the edge redirects http→https.
+4. **Install Caddy** (Debian/Ubuntu):
    ```bash
    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
    sudo apt update && sudo apt install -y caddy
    ```
-3. **Configure** — edit `deploy/Caddyfile`, replacing the placeholder hostnames
-   and confirming the `APP_PORT`s match your environments, then:
+5. **Configure** — confirm the `APP_PORT`s in `deploy/Caddyfile` match your
+   environments, then:
    ```bash
    sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
    sudo caddy validate --config /etc/caddy/Caddyfile
    sudo systemctl reload caddy
    ```
-4. Open ports **80 and 443** in the firewall / cloud security group (80 is
-   needed for the ACME challenge).
-5. Verify end to end: `curl -fsS https://tme-test.example.com/health`.
+6. Open **port 443** to Cloudflare's IP ranges in the firewall / security group.
+   Port 80 is not required (no ACME challenge).
+7. Verify end to end: `curl -fsS https://tme-test.izhex.com/health`.
 
 > This proxy runs on the host, outside Docker Compose — the CI deploy does **not**
 > install or manage it. Set it up once by hand.

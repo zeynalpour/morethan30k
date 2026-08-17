@@ -1,34 +1,53 @@
-# TME reverse proxy — Caddy
+# TME reverse proxy — Caddy (behind Cloudflare, proxied / orange cloud)
 # =============================================================================
-# This runs on the HOST (not in Docker Compose). Caddy terminates TLS on :443
-# and forwards to the app containers, which publish on 127.0.0.1:${APP_PORT}
-# only (see docker-compose.prod.yml: "127.0.0.1:${APP_PORT}:8000").
+# Runs on the HOST (not in Docker Compose). Caddy terminates TLS and forwards to
+# the app containers, which publish on 127.0.0.1:${APP_PORT} only
+# (see docker-compose.prod.yml: "127.0.0.1:${APP_PORT}:8000").
 #
-# Caddy fetches and auto-renews Let's Encrypt certs on first request — no
-# certbot, no cron. Ports 80 AND 443 must be open in the firewall (80 is used
-# for the ACME challenge).
+# Request path (izhex.com is proxied through Cloudflare — orange cloud):
+#   Telegram -> Cloudflare edge (TLS) -> server: Caddy (TLS) -> 127.0.0.1:${APP_PORT}
+#     tme-test.izhex.com -> 127.0.0.1:8081  (tme-test, APP_PORT=8081)
+#     tme.izhex.com      -> 127.0.0.1:8080  (tme-prod, APP_PORT=8080)
 #
-#   Telegram --443--> Caddy --> 127.0.0.1:8081  (tme-test, APP_PORT=8081)
-#                          \--> 127.0.0.1:8080  (tme-prod, APP_PORT=8080)
-#
-# WEBHOOK_BASE_URL (GitHub Environment Variable) must equal each hostname below,
-# e.g. https://tme-test.example.com  —  the app appends /webhook/{token}.
+# Because Cloudflare's proxy intercepts the ACME challenge, Caddy can't use
+# Let's Encrypt here. We use a Cloudflare ORIGIN CERTIFICATE instead and set
+# Cloudflare's SSL/TLS mode to "Full (strict)".
 #
 # Setup:
-#   1. Replace the two hostnames below with your real domain.
-#   2. sudo caddy validate --config /etc/caddy/Caddyfile
-#   3. sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#   1. Cloudflare -> SSL/TLS -> Origin Server -> Create Certificate
+#      (hostnames: izhex.com, *.izhex.com). Save on the server:
+#        sudo install -d -m 755 /etc/caddy/certs
+#        sudo tee /etc/caddy/certs/izhex.pem >/dev/null   # paste the certificate
+#        sudo tee /etc/caddy/certs/izhex.key >/dev/null   # paste the private key
+#        sudo chmod 600 /etc/caddy/certs/izhex.key
+#   2. Cloudflare -> SSL/TLS -> Overview -> Full (strict).
+#   3. sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#      sudo caddy validate --config /etc/caddy/Caddyfile
+#      sudo systemctl reload caddy
+#   4. Open port 443 to Cloudflare. Port 80 is NOT required (no ACME); turn on
+#      Cloudflare "Always Use HTTPS" to redirect http->https at the edge.
+#
+# WEBHOOK_BASE_URL (GitHub Environment Variable) must equal each hostname below,
+# e.g. https://tme-test.izhex.com  —  the app appends /webhook/{token}.
 #
 # NOTE: APP_PORTs below must match the APP_PORT you set per environment. The
 # defaults (8081 test / 8080 prod) come from docker-compose.prod.yml.
 # =============================================================================
 
+# One Cloudflare Origin Certificate covers izhex.com and *.izhex.com, so the
+# same cert/key pair serves both site blocks.
+(cf_origin_tls) {
+	tls /etc/caddy/certs/izhex.pem /etc/caddy/certs/izhex.key
+}
+
 # --- TEST -------------------------------------------------------------------
 tme-test.izhex.com {
+	import cf_origin_tls
 	reverse_proxy 127.0.0.1:8081
 }
 
 # --- PRODUCTION -------------------------------------------------------------
 tme.izhex.com {
+	import cf_origin_tls
 	reverse_proxy 127.0.0.1:8080
 }
