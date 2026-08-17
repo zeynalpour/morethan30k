@@ -1,0 +1,44 @@
+[project]
+name = "tme"
+version = "0.1.0"
+description = "TME — Telegram Multi-Tenant Bot Engine: serve 30k+ custom bots from a single webhook + codebase."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "TME Platform Team" }]
+license = { text = "MIT" }
+
+# NOTE: Loose lower-bound pins on purpose — `uv lock` produces the reproducible,
+# fully-resolved uv.lock. Bump these only when we adopt a new API surface.
+dependencies = [
+    "aiogram>=3.13,<4",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "redis>=5.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "orjson>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+# Console entrypoints so `uv run tme-api` / `uv run tme-setup-webhooks` work.
+[project.scripts]
+tme-api = "tme.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tme"]
+
+# uv-specific configuration. `uv sync --extra dev` installs dev tooling too.
+[tool.uv]
+package = true

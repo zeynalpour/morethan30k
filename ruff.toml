@@ -1,0 +1,60 @@
+# Aggressive-but-practical ruff configuration for TME.
+# Run:  uv run ruff check --fix .   and   uv run ruff format .
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[lint]
+# Broad, strict rule selection. We opt into large families and then silence the
+# handful of rules that fight FastAPI/aiogram idioms below.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "N",    # pep8-naming
+    "UP",   # pyupgrade (modern syntax)
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins (shadowing)
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "PTH",  # flake8-use-pathlib
+    "RUF",  # ruff-specific rules
+    "ASYNC",# flake8-async
+    "LOG",  # flake8-logging
+    "G",    # flake8-logging-format
+    "PL",   # pylint
+    "TID",  # flake8-tidy-imports
+]
+ignore = [
+    "PLR0913", # "too many arguments" — DI-heavy handlers legitimately take many.
+    "B008",    # FastAPI/aiogram use function calls in defaults (Depends, F.func).
+    "RUF012",  # aiogram/pydantic mutable class attrs are fine (ClassVar noise).
+    # Type-checking-import rules fight runtime-evaluated annotations. SQLAlchemy
+    # 2.0 (`Mapped[...]`), Pydantic, FastAPI DI and aiogram all need these
+    # imports present at runtime, so moving them under TYPE_CHECKING breaks them.
+    "TC001",
+    "TC002",
+    "TC003",
+    # Emoji are first-class content in a Telegram bot's UI text; do not flag
+    # them as "ambiguous unicode".
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[lint.isort]
+known-first-party = ["tme"]
+combine-as-imports = true
+force-sort-within-sections = true
+
+[lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+docstring-code-format = true
+quote-style = "double"
