@@ -24,7 +24,7 @@ import hmac
 
 from aiogram.types import Update
 from fastapi import FastAPI, Header, Path, Request, Response
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 
 from tme.config import settings
 from tme.core.bot_registry import close_registry, get_tenant_bot, main_bot
@@ -65,7 +65,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="TME — Telegram Multi-Tenant Bot Engine",
     version="0.1.0",
-    default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
 
@@ -93,7 +92,7 @@ async def telegram_webhook(
     if not _verify_secret(x_telegram_bot_api_secret_token):
         logger.warning("Rejected update with bad secret for …%s", bot_token[-6:])
         # 403 — but do not echo detail to unauthenticated callers.
-        return ORJSONResponse({"ok": False}, status_code=403)
+        return JSONResponse({"ok": False}, status_code=403)
 
     data = await request.json()
 
@@ -103,7 +102,7 @@ async def telegram_webhook(
             # Undocumented update type: handled out-of-band from the raw dict.
             if "managed_bot_updated" in data:
                 await handle_managed_bot_updated(data, main_bot)
-                return ORJSONResponse({"ok": True})
+                return JSONResponse({"ok": True})
 
             update = Update.model_validate(data, context={"bot": main_bot})
             await main_dp.feed_update(bot=main_bot, update=update)
@@ -117,7 +116,7 @@ async def telegram_webhook(
         # update indefinitely. The error is captured for us to inspect.
         logger.exception("Error processing update for …%s", bot_token[-6:])
 
-    return ORJSONResponse({"ok": True})
+    return JSONResponse({"ok": True})
 
 
 def run() -> None:

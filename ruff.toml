@@ -49,6 +49,12 @@ known-first-party = ["tme"]
 combine-as-imports = true
 force-sort-within-sections = true
 
+[lint.per-file-ignores]
+# Tests have their own conventions: comparing to literal HTTP codes is clearer
+# than named constants, and asserts are the point.
+"tests/**" = ["PLR2004"]
+"migrations/**" = ["INP001"]  # Alembic dirs are intentionally not packages.
+
 [lint.flake8-tidy-imports]
 ban-relative-imports = "parents"
 

@@ -1,0 +1,19 @@
+# Keep the build context (and final image) lean and secret-free.
+.git
+.gitignore
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.ruff_cache
+.mypy_cache
+.pytest_cache
+tests
+# Never bake secrets or local infra into the image:
+.env
+*.env
+!.env.example
+docker-compose.yml
+docker-compose.prod.yml
+DEPLOYMENT.md
+new-p.md

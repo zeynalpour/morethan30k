@@ -1,0 +1,17 @@
+name: CI
+
+# Pull-request gate. Deploy workflows re-run the same reusable CI on merge/tag.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_reusable-ci.yml
