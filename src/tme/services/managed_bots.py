@@ -16,7 +16,7 @@ here exactly as the spec describes, but behind a thin, clearly-marked seam:
   so it flows through aiogram's normal request pipeline. If/when Telegram ships
   the real method (possibly with different field names), only this class needs
   to change.
-* :func:`handle_managed_bot_updated` consumes the **raw update dict**, because
+* :func:`handle_managed_bot` consumes the **raw update dict**, because
   aiogram's typed ``Update`` model will not contain an unknown field.
 
 If your Bot API build does not expose ``getManagedBotToken``, the call will
@@ -153,16 +153,16 @@ async def register_webhook(token: str) -> None:
             row.webhook_registered = True
 
 
-async def handle_managed_bot_updated(raw_update: dict[str, Any], main_bot: Bot) -> None:
-    """Handle a raw ``managed_bot_updated`` update from the Main Bot's webhook.
+async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
+    """Handle a raw ``managed_bot`` update from the Main Bot's webhook.
 
     Extracts the managed bot's id + the authorising owner, calls
     :class:`GetManagedBotToken` in the background, then provisions the bot.
 
-    ``raw_update`` is the *entire* update dict; we read the ``managed_bot_updated``
+    ``raw_update`` is the *entire* update dict; we read the ``managed_bot``
     sub-object defensively because its exact shape is not yet documented.
     """
-    payload = raw_update.get("managed_bot_updated") or {}
+    payload = raw_update.get("managed_bot") or {}
 
     # Defensive extraction — accept a few plausible field spellings.
     managed_bot_user_id = (
@@ -172,7 +172,7 @@ async def handle_managed_bot_updated(raw_update: dict[str, Any], main_bot: Bot) 
     owner_id = owner.get("id") if isinstance(owner, dict) else None
 
     if not managed_bot_user_id or not owner_id:
-        logger.warning("managed_bot_updated missing ids; payload keys=%s", list(payload))
+        logger.warning("managed_bot missing ids; payload keys=%s", list(payload))
         return
 
     try:

@@ -25,7 +25,7 @@ dispatcher.
                  ▼                                       ▼
          main_dp (controller)                    tenant_dp  (ONE dispatcher
          /start, Create Bot,                      for ALL tenant bots)
-         managed_bot_updated                           │
+         managed_bot                           │
                                           ConfigMiddleware injects config
                                                         │
                                                         ▼
@@ -158,7 +158,7 @@ confirmed:
 - `src/tme/services/managed_bots.py` → `GetManagedBotToken` is a custom aiogram
   `TelegramMethod`. Field names are a best-effort guess — **verify against the
   live API**.
-- `managed_bot_updated` is dispatched from the raw update dict in the gateway
+- `managed_bot` is dispatched from the raw update dict in the gateway
   (aiogram's typed `Update` won't carry an unknown field).
 
 If your Bot API build lacks `getManagedBotToken`, the call raises

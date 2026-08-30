@@ -2,7 +2,7 @@
 
 We deliberately avoid constructing real aiogram ``Update`` objects or touching
 the network: these tests target the logic *we* wrote — the secret-token gate
-and the ``managed_bot_updated`` routing branch.
+and the ``managed_bot`` routing branch.
 
 Note: ``TestClient(app)`` is created WITHOUT the ``with`` context manager on
 purpose, so FastAPI's lifespan (which would call ``set_webhook`` over the
@@ -45,14 +45,14 @@ def test_webhook_rejects_missing_secret() -> None:
     assert resp.status_code == 403
 
 
-def test_managed_bot_updated_is_routed_to_service(monkeypatch) -> None:
-    """A managed_bot_updated payload on the main bot must hit the service."""
+def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
+    """A managed_bot payload on the main bot must hit the service."""
     fake_handler = AsyncMock()
-    monkeypatch.setattr(main, "handle_managed_bot_updated", fake_handler)
+    monkeypatch.setattr(main, "handle_managed_bot", fake_handler)
 
     payload = {
         "update_id": 10,
-        "managed_bot_updated": {"bot_user_id": 999, "owner": {"id": 42}},
+        "managed_bot": {"bot_user_id": 999, "owner": {"id": 42}},
     }
     resp = client.post(
         f"/webhook/{_MAIN_TOKEN}",
@@ -67,11 +67,11 @@ def test_managed_bot_updated_is_routed_to_service(monkeypatch) -> None:
 def test_processing_errors_still_return_200(monkeypatch) -> None:
     """A handler blowing up must not make us return 5xx (Telegram would retry)."""
     boom = AsyncMock(side_effect=RuntimeError("kaboom"))
-    monkeypatch.setattr(main, "handle_managed_bot_updated", boom)
+    monkeypatch.setattr(main, "handle_managed_bot", boom)
 
     resp = client.post(
         f"/webhook/{_MAIN_TOKEN}",
-        json={"update_id": 11, "managed_bot_updated": {"bot_user_id": 1, "owner": {"id": 2}}},
+        json={"update_id": 11, "managed_bot": {"bot_user_id": 1, "owner": {"id": 2}}},
         headers={_HEADER: _SECRET},
     )
     assert resp.status_code == 200
