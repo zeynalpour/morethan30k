@@ -49,7 +49,7 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
     """A managed_bot payload on the main bot must hit the service."""
     fake_handler = AsyncMock()
     monkeypatch.setattr("tme.services.managed_bots.handle_managed_bot", fake_handler)
-    # In tests/test_webhook.py (around line 55)
+
     payload = {
         "update_id": 10,
         "managed_bot": {
@@ -57,11 +57,13 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
                 "id": 999,
                 "is_bot": True,
                 "first_name": "TestBot",
+                "username": "test_bot",
             },
             "bot": {
                 "id": 999,
                 "is_bot": True,
                 "first_name": "TestBot",
+                "username": "test_bot",
             },
             "owner": {
                 "id": 42,

@@ -88,7 +88,7 @@ async def on_managed_bot(
 ) -> None:
     owner_id = event.user.id
     managed_bot_id = event.bot.id
-    username = event.bot.username
+    username = getattr(event.bot, "username", None)
 
     logger.info(
         "ManagedBotUpdated: owner=%s managed_bot_id=%s username=@%s",
