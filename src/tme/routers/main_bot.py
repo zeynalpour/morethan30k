@@ -42,7 +42,7 @@ def _create_bot_keyboard() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(
                     text="➕ Create a Managed Bot",
-                    request_managed_bot=KeyboardButtonRequestManagedBot(),
+                    request_managed_bot=KeyboardButtonRequestManagedBot(request_id=1),
                 )
             ]
         ],
@@ -87,8 +87,8 @@ async def on_managed_bot(
     bot: Bot,
 ) -> None:
     owner_id = event.user.id
-    managed_bot_id = event.bot.id
-    username = getattr(event.bot, "username", None)
+    managed_bot_id = event.bot_user.id
+    username = getattr(event.bot_user, "username", None)
 
     logger.info(
         "ManagedBotUpdated: owner=%s managed_bot_id=%s username=@%s",

@@ -166,9 +166,9 @@ async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
     """
     payload = raw_update.get("managed_bot") or {}
 
-    # Official fields: "user" (owner) and "bot" (managed bot info)
+    # Official fields: "user" (owner) and "bot_user" (managed bot info)
     owner_data = payload.get("user") or {}
-    bot_data = payload.get("bot") or {}
+    bot_data = payload.get("bot_user") or {}
 
     owner_id = owner_data.get("id")
     managed_bot_id = bot_data.get("id")
