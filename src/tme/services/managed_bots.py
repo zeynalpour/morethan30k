@@ -176,9 +176,7 @@ async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
     # first_name = bot_data.get("first_name")
 
     if not owner_id or not managed_bot_id:
-        logger.warning(
-            "managed_bot update missing ids; payload keys=%s", list(payload)
-        )
+        logger.warning("managed_bot update missing ids; payload keys=%s", list(payload))
         return
 
     try:

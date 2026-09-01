@@ -35,26 +35,27 @@ main_router = Router(name="main_controller")
 _CREATE_BOT = "create_bot"
 
 
-
 def _create_bot_keyboard() -> ReplyKeyboardMarkup:
     """Keyboard that triggers Telegram's managed bot creation dialog."""
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton(
-                text="➕ Create a Managed Bot",
-                request_managed_bot=KeyboardButtonRequestManagedBot(),
-            )
-        ]],
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="➕ Create a Managed Bot",
+                    request_managed_bot=KeyboardButtonRequestManagedBot(),
+                )
+            ]
+        ],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
 
 @main_router.message(CommandStart())
 async def controller_start(message: Message) -> None:
     name = message.from_user.first_name if message.from_user else "there"
     await message.answer(
-        f"👋 Hi {name}! Welcome to TME.\n\n"
-        "Tap the button below to create your own Telegram bot.",
+        f"👋 Hi {name}! Welcome to TME.\n\nTap the button below to create your own Telegram bot.",
         reply_markup=_create_bot_keyboard(),
     )
 
@@ -79,6 +80,7 @@ async def on_create_bot(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id if callback.from_user else "?"
     logger.info("User %s initiated managed-bot creation", user_id)
 
+
 @main_router.managed_bot_updated()
 async def on_managed_bot_updated(
     event: ManagedBotUpdated,
@@ -90,7 +92,9 @@ async def on_managed_bot_updated(
 
     logger.info(
         "ManagedBotUpdated: owner=%s managed_bot_id=%s username=@%s",
-        owner_id, managed_bot_id, username,
+        owner_id,
+        managed_bot_id,
+        username,
     )
 
     try:
@@ -110,6 +114,7 @@ async def on_managed_bot_updated(
         chat_id=owner_id,
         text=f"✅ Your bot @{username} is live! Try sending it /start.",
     )
+
 
 @main_router.message(F.managed_bot_created)
 async def on_managed_bot_created_message(message: Message) -> None:
