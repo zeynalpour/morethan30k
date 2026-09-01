@@ -7,8 +7,6 @@ controller bot **and** for all 30k+ tenant bots. It:
 2. Routes by token: the controller token → ``main_dp``; anything else →
    the shared ``tenant_dp`` (via an on-demand :class:`~aiogram.Bot` from the
    registry).
-3. Special-cases the undocumented ``managed_bot`` update, handing it to
-   the provisioning service directly.
 
 Design choice — we ``await`` update processing *before* returning ``200``.
 Telegram sends the next update for a chat only after receiving our ``200`` (or a
@@ -33,7 +31,6 @@ from tme.core.dispatchers import main_dp, tenant_dp
 from tme.core.logging import configure_logging, get_logger
 from tme.core.redis_client import close_redis
 from tme.database.engine import dispose_engine
-from tme.services import managed_bots
 
 logger = get_logger(__name__)
 
@@ -148,12 +145,6 @@ async def telegram_webhook(
     try:
         if hmac.compare_digest(bot_token, _MAIN_BOT_TOKEN):
             # --- Controller bot -------------------------------------------
-            # Undocumented update type: handled out-of-band from the raw dict
-            # because aiogram's typed Update model has no field for it.
-            if "managed_bot" in data:
-                await managed_bots.handle_managed_bot(data, main_bot)
-                return JSONResponse({"ok": True})
-
             update = Update.model_validate(data, context={"bot": main_bot})
             await main_dp.feed_update(bot=main_bot, update=update)
         else:

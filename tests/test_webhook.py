@@ -2,7 +2,7 @@
 
 We deliberately avoid constructing real aiogram ``Update`` objects or touching
 the network: these tests target the logic *we* wrote — the secret-token gate
-and the ``managed_bot`` routing branch.
+and the controller/tenant routing branch.
 
 Note: ``TestClient(app)`` is created WITHOUT the ``with`` context manager on
 purpose, so FastAPI's lifespan (which would call ``set_webhook`` over the
@@ -45,35 +45,24 @@ def test_webhook_rejects_missing_secret() -> None:
     assert resp.status_code == 403
 
 
-def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
-    """A managed_bot payload on the main bot must hit the service."""
-    fake_handler = AsyncMock()
-    monkeypatch.setattr("tme.services.managed_bots.handle_managed_bot", fake_handler)
-
-    # Mock Telegram API call to get the managed bot token
-    monkeypatch.setattr(
-        "aiogram.Bot.get_managed_bot_token", AsyncMock(return_value="fake_managed_token_123")
-    )
+def test_managed_bot_update_flows_through_dispatcher(monkeypatch) -> None:
+    """A managed_bot payload on the main bot must reach main_dp (typed path)."""
+    feed_update = AsyncMock()
+    monkeypatch.setattr("tme.main.main_dp.feed_update", feed_update)
 
     payload = {
         "update_id": 10,
         "managed_bot": {
             "user": {
-                "id": 999,
-                "is_bot": True,
-                "first_name": "TestBot",
-                "username": "test_bot",
-            },
-            "bot": {
-                "id": 999,
-                "is_bot": True,
-                "first_name": "TestBot",
-                "username": "test_bot",
-            },
-            "owner": {
                 "id": 42,
                 "is_bot": False,
                 "first_name": "Owner",
+            },
+            "bot_user": {
+                "id": 999,
+                "is_bot": True,
+                "first_name": "TestBot",
+                "username": "test_bot",
             },
         },
     }
@@ -84,17 +73,17 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
     )
 
     assert resp.status_code == 200
-    fake_handler.assert_awaited_once()
+    feed_update.assert_awaited_once()
 
 
 def test_processing_errors_still_return_200(monkeypatch) -> None:
     """A handler blowing up must not make us return 5xx (Telegram would retry)."""
     boom = AsyncMock(side_effect=RuntimeError("kaboom"))
-    monkeypatch.setattr("tme.services.managed_bots.handle_managed_bot", boom)
+    monkeypatch.setattr("tme.main.main_dp.feed_update", boom)
 
     resp = client.post(
         f"/webhook/{_MAIN_TOKEN}",
-        json={"update_id": 11, "managed_bot": {"bot_user_id": 1, "owner": {"id": 2}}},
+        json={"update_id": 11, "message": {"text": "hi"}},
         headers={_HEADER: _SECRET},
     )
     assert resp.status_code == 200

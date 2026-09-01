@@ -1,38 +1,21 @@
 """Managed-bot provisioning service.
 
-This module implements spec §2 / §4-Step-2: when a user authorises the Main Bot
-to create a bot on their behalf, we obtain the new bot's token, persist it, and
-wire it into the platform (cache + webhook) so it is immediately live.
+When a user makes the Main Bot create a bot on their behalf, Telegram delivers a
+``managed_bot`` update to the controller, which is handled by the typed
+``@main_router.managed_bot()`` handler and by the native
+``aiogram.methods.GetManagedBotToken``. This module contains the persistence
+and wiring steps that turn that token into a live tenant: persist the bot +
+default config, prime the Redis cache, and register the per-bot webhook.
 
---------------------------------------------------------------------------------
-⚠️  API CAVEAT — READ THIS
---------------------------------------------------------------------------------
-The spec references a ``ManagedBotUpdated`` update and a ``getManagedBotToken``
-Bot API method. These are **not part of the standard, publicly documented
-Telegram Bot API / aiogram 3.x** at the time of writing. They are implemented
-here exactly as the spec describes, but behind a thin, clearly-marked seam:
-
-* :class:`GetManagedBotToken` is a custom :class:`~aiogram.methods.base.TelegramMethod`
-  so it flows through aiogram's normal request pipeline. If/when Telegram ships
-  the real method (possibly with different field names), only this class needs
-  to change.
-* :func:`handle_managed_bot` consumes the **raw update dict**, because
-  aiogram's typed ``Update`` model will not contain an unknown field.
-
-If your Bot API build does not expose ``getManagedBotToken``, the call will
-raise :class:`~aiogram.exceptions.TelegramBadRequest`; we catch and log it so a
-single bad event never takes the gateway down.
-
-Managed Bots were officially added in Bot API 9.6 on April 3, 2026.
+This follows the official Bot API (Managed Bots were added in Bot API 9.6 on
+April 3, 2026) and aiogram 3.x native support.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.methods.base import TelegramMethod
 from sqlalchemy import select
 
 from tme.config import settings
@@ -44,21 +27,6 @@ from tme.database.models import Bot as BotModel, BotConfig, User
 from tme.schemas.bot_config import BotConfigSchema
 
 logger = get_logger(__name__)
-
-
-class GetManagedBotToken(TelegramMethod[str]):
-    """Custom Bot API method: fetch the token of a bot the user just authorised.
-
-    .. warning::
-       Unverified against the public Bot API — see the module docstring. The
-       field name below (``managed_bot_user_id``) is a best-effort guess; adjust
-       it to match the real method signature once confirmed.
-    """
-
-    __returning__ = str
-    __api_method__ = "getManagedBotToken"
-
-    user_id: int
 
 
 async def _upsert_owner(
@@ -153,42 +121,3 @@ async def register_webhook(token: str) -> None:
         result = await session.execute(select(BotModel).where(BotModel.token == token))
         if (row := result.scalar_one_or_none()) is not None:
             row.webhook_registered = True
-
-
-async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
-    """Handle a raw ``managed_bot`` update from the Main Bot's webhook.
-
-    Extracts the managed bot's id + the authorising owner, calls
-    :class:`GetManagedBotToken` in the background, then provisions the bot.
-
-    ``raw_update`` is the *entire* update dict; we read the ``managed_bot``
-    sub-object defensively because its exact shape is not yet documented.
-    """
-    payload = raw_update.get("managed_bot") or {}
-
-    # Official fields: "user" (owner) and "bot_user" (managed bot info)
-    owner_data = payload.get("user") or {}
-    bot_data = payload.get("bot_user") or {}
-
-    owner_id = owner_data.get("id")
-    managed_bot_id = bot_data.get("id")
-    # username = bot_data.get("username")
-    # first_name = bot_data.get("first_name")
-
-    if not owner_id or not managed_bot_id:
-        logger.warning("managed_bot update missing ids; payload keys=%s", list(payload))
-        return
-
-    try:
-        # Official parameter name is user_id (the managed bot's user id)
-        token = await main_bot(GetManagedBotToken(user_id=int(managed_bot_id)))
-    except TelegramAPIError as exc:
-        logger.error("getManagedBotToken failed for bot_id=%s: %s", managed_bot_id, exc)
-        return
-
-    await provision_managed_bot(
-        token=token,
-        owner_telegram_id=int(owner_id),
-        owner_username=owner_data.get("username"),
-        owner_first_name=owner_data.get("first_name"),
-    )

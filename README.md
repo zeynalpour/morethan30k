@@ -185,14 +185,17 @@ Reference: <https://core.telegram.org/bots/api#managedbotupdated> ·
 
 ### Implementation status
 
-`src/tme/services/managed_bots.py` still ships a hand-rolled
-`GetManagedBotToken` written before aiogram added native support. Its signature
-(`user_id: int` → token `str`) matches the official method exactly, so the
-behaviour is already correct — it can simply be swapped for the native
-`aiogram.methods.GetManagedBotToken`. Likewise, `handle_managed_bot` reads the
-raw update dict defensively, but aiogram's typed `Update` now does carry
-`managed_bot` (`Update.managed_bot: ManagedBotUpdated | None`), so that can be
-migrated to the typed path too.
+The platform uses the **native aiogram path** end-to-end:
+
+- `src/tme/routers/main_bot.py` handles `managed_bot` updates via the typed
+  `@main_router.managed_bot()` decorator (`ManagedBotUpdated`) and fetches the
+  token with the native `aiogram.methods.GetManagedBotToken`.
+- `src/tme/services/managed_bots.py` contains only the provisioning helpers
+  (`provision_managed_bot`, `register_webhook`) — the legacy raw-dict
+  `handle_managed_bot` and the hand-rolled method were removed (see
+  `SUB-PHASES.md` → S0.1).
+- `Update.managed_bot` (`ManagedBotUpdated | None`) is parsed directly by
+  aiogram's typed model in the gateway.
 
 If a Bot API build lacks these methods, the calls raise
 `TelegramBadRequest`; they're caught and logged so the gateway stays up. The
@@ -230,7 +233,7 @@ tme/
     │   ├── main_bot.py       # controller: /start, Create New Bot
     │   └── dynamic.py        # JSON flow engine for tenants
     ├── services/
-    │   └── managed_bots.py   # getManagedBotToken + provisioning
+    │   └── managed_bots.py   # provisioning + webhook registration
     └── schemas/
         └── bot_config.py     # validated JSON flow schema
 ```

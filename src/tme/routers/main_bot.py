@@ -4,10 +4,10 @@ This is the bot users talk to in order to create and manage their own tenant
 bots. It runs on its own dispatcher (``main_dp``) — kept separate from the
 tenant dispatcher so management commands can never leak into cloned bots.
 
-Note on ``managed_bot``: because that update type is not represented in
-aiogram's typed ``Update`` model, it is dispatched from the webhook gateway
-straight to :func:`tme.services.managed_bots.handle_managed_bot` rather
-than through a decorator here. See that module's docstring for the rationale.
+``managed_bot`` updates (creation / token change / owner change of a bot
+managed by the Main Bot) are handled natively via ``@main_router.managed_bot()``
+with aiogram's typed ``ManagedBotUpdated`` — the gateway routes every update
+through ``main_dp``.
 """
 
 from __future__ import annotations
@@ -64,10 +64,11 @@ async def controller_start(message: Message) -> None:
 async def on_create_bot(callback: CallbackQuery) -> None:
     """Kick off managed-bot creation.
 
-    In a live deployment this is where you trigger Telegram's managed-bot
-    authorisation for the user. Once they authorise, Telegram sends a
-    ``managed_bot`` update to this Main Bot's webhook, which the gateway
-    routes to the provisioning service — no further action is needed here.
+    Triggered by the inline callback button; the ``KeyboardButton`` with
+    ``request_managed_bot`` usually carries the flow already. Once the user
+    authorises, Telegram sends a ``managed_bot`` update, which
+    ``@main_router.managed_bot()`` provisions — no further action is needed
+    here.
     """
     await callback.answer()
     if callback.message is not None:

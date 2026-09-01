@@ -30,9 +30,9 @@ as work progresses; PRs should reference the phase they belong to.
   - `bots` / `bot_configs` tables (owner FK, JSONB `flow`, webhook flag).
   - Config lives in Postgres → cached in Redis → executed by the shared
     dispatcher.
-- 🟡 **Remove the raw-dict `managed_bot` interception** in
+- 🟢 **Remove the raw-dict `managed_bot` interception** in
   `src/tme/main.py` so the native, typed `@main_router.managed_bot()` handler
-  actually runs in production.
+  actually runs in production. (See `SUB-PHASES.md` → S0.1.)
 - ⚪ **`BotType` enum + per-type config union** — one `Bot` table holding typed
   configs: `generic | hello | echo | bridge | ai_gateway | …`. 💡
   *Foundational for every new bot kind below.*
