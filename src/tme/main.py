@@ -33,7 +33,6 @@ from tme.core.dispatchers import main_dp, tenant_dp
 from tme.core.logging import configure_logging, get_logger
 from tme.core.redis_client import close_redis
 from tme.database.engine import dispose_engine
-from tme.services.managed_bots import handle_managed_bot
 
 logger = get_logger(__name__)
 

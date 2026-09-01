@@ -165,29 +165,29 @@ async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
     sub-object defensively because its exact shape is not yet documented.
     """
     payload = raw_update.get("managed_bot") or {}
-    
+
     # Official fields: "user" (owner) and "bot" (managed bot info)
     owner_data = payload.get("user") or {}
     bot_data = payload.get("bot") or {}
-    
+
     owner_id = owner_data.get("id")
     managed_bot_id = bot_data.get("id")
-    username = bot_data.get("username")
-    first_name = bot_data.get("first_name")
-    
+    # username = bot_data.get("username")
+    # first_name = bot_data.get("first_name")
+
     if not owner_id or not managed_bot_id:
         logger.warning(
             "managed_bot update missing ids; payload keys=%s", list(payload)
         )
         return
-    
+
     try:
         # Official parameter name is user_id (the managed bot's user id)
         token = await main_bot(GetManagedBotToken(user_id=int(managed_bot_id)))
     except TelegramAPIError as exc:
         logger.error("getManagedBotToken failed for bot_id=%s: %s", managed_bot_id, exc)
         return
-    
+
     await provision_managed_bot(
         token=token,
         owner_telegram_id=int(owner_id),
