@@ -48,7 +48,7 @@ def test_webhook_rejects_missing_secret() -> None:
 def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
     """A managed_bot payload on the main bot must hit the service."""
     fake_handler = AsyncMock()
-    monkeypatch.setattr(main, "handle_managed_bot", fake_handler)
+    monkeypatch.setattr("tme.services.managed_bots.handle_managed_bot", fake_handler)
 
     payload = {
         "update_id": 10,
@@ -67,7 +67,7 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
 def test_processing_errors_still_return_200(monkeypatch) -> None:
     """A handler blowing up must not make us return 5xx (Telegram would retry)."""
     boom = AsyncMock(side_effect=RuntimeError("kaboom"))
-    monkeypatch.setattr(main, "handle_managed_bot", boom)
+    monkeypatch.setattr("tme.services.managed_bots.handle_managed_bot", boom)
 
     resp = client.post(
         f"/webhook/{_MAIN_TOKEN}",
