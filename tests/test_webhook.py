@@ -44,6 +44,7 @@ def test_webhook_rejects_missing_secret() -> None:
     resp = client.post(f"/webhook/{_MAIN_TOKEN}", json={"update_id": 1})
     assert resp.status_code == 403
 
+
 def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
     """A managed_bot payload on the main bot must hit the service."""
     fake_handler = AsyncMock()
@@ -51,8 +52,7 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
 
     # Mock Telegram API call to get the managed bot token
     monkeypatch.setattr(
-        "aiogram.Bot.get_managed_bot_token",
-        AsyncMock(return_value="fake_managed_token_123")
+        "aiogram.Bot.get_managed_bot_token", AsyncMock(return_value="fake_managed_token_123")
     )
 
     payload = {
@@ -85,6 +85,7 @@ def test_managed_bot_is_routed_to_service(monkeypatch) -> None:
 
     assert resp.status_code == 200
     fake_handler.assert_awaited_once()
+
 
 def test_processing_errors_still_return_200(monkeypatch) -> None:
     """A handler blowing up must not make us return 5xx (Telegram would retry)."""
