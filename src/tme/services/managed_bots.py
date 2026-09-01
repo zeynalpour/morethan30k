@@ -22,6 +22,8 @@ here exactly as the spec describes, but behind a thin, clearly-marked seam:
 If your Bot API build does not expose ``getManagedBotToken``, the call will
 raise :class:`~aiogram.exceptions.TelegramBadRequest`; we catch and log it so a
 single bad event never takes the gateway down.
+
+Managed Bots were officially added in Bot API 9.6 on April 3, 2026.
 """
 
 from __future__ import annotations
@@ -56,8 +58,7 @@ class GetManagedBotToken(TelegramMethod[str]):
     __returning__ = str
     __api_method__ = "getManagedBotToken"
 
-    #: Telegram user id of the managed bot whose token we are requesting.
-    managed_bot_user_id: int
+    user_id: int
 
 
 async def _upsert_owner(
@@ -146,6 +147,7 @@ async def register_webhook(token: str) -> None:
         url=settings.webhook_url_for(token),
         secret_token=settings.webhook_secret.get_secret_value(),
         drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
     )
     async with session_scope() as session:
         result = await session.execute(select(BotModel).where(BotModel.token == token))
@@ -163,27 +165,32 @@ async def handle_managed_bot(raw_update: dict[str, Any], main_bot: Bot) -> None:
     sub-object defensively because its exact shape is not yet documented.
     """
     payload = raw_update.get("managed_bot") or {}
-
-    # Defensive extraction — accept a few plausible field spellings.
-    managed_bot_user_id = (
-        payload.get("bot_user_id") or payload.get("managed_bot_user_id") or payload.get("user_id")
-    )
-    owner = payload.get("owner") or payload.get("from") or {}
-    owner_id = owner.get("id") if isinstance(owner, dict) else None
-
-    if not managed_bot_user_id or not owner_id:
-        logger.warning("managed_bot missing ids; payload keys=%s", list(payload))
+    
+    # Official fields: "user" (owner) and "bot" (managed bot info)
+    owner_data = payload.get("user") or {}
+    bot_data = payload.get("bot") or {}
+    
+    owner_id = owner_data.get("id")
+    managed_bot_id = bot_data.get("id")
+    username = bot_data.get("username")
+    first_name = bot_data.get("first_name")
+    
+    if not owner_id or not managed_bot_id:
+        logger.warning(
+            "managed_bot update missing ids; payload keys=%s", list(payload)
+        )
         return
-
+    
     try:
-        token = await main_bot(GetManagedBotToken(managed_bot_user_id=int(managed_bot_user_id)))
+        # Official parameter name is user_id (the managed bot's user id)
+        token = await main_bot(GetManagedBotToken(user_id=int(managed_bot_id)))
     except TelegramAPIError as exc:
-        logger.error("getManagedBotToken failed for bot_user_id=%s: %s", managed_bot_user_id, exc)
+        logger.error("getManagedBotToken failed for bot_id=%s: %s", managed_bot_id, exc)
         return
-
+    
     await provision_managed_bot(
         token=token,
         owner_telegram_id=int(owner_id),
-        owner_username=owner.get("username") if isinstance(owner, dict) else None,
-        owner_first_name=owner.get("first_name") if isinstance(owner, dict) else None,
+        owner_username=owner_data.get("username"),
+        owner_first_name=owner_data.get("first_name"),
     )

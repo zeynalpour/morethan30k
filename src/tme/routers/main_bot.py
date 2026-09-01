@@ -12,12 +12,14 @@ than through a decorator here. See that module's docstring for the rationale.
 
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
+from aiogram.methods import GetManagedBotToken
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ManagedBotUpdated,
     Message,
 )
 
@@ -30,24 +32,33 @@ main_router = Router(name="main_controller")
 _CREATE_BOT = "create_bot"
 
 
-def _controller_menu() -> InlineKeyboardMarkup:
-    """Inline keyboard for the controller's home screen."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Create New Bot", callback_data=_CREATE_BOT)],
-        ]
-    )
+from aiogram.types import (
+    KeyboardButton,
+    KeyboardButtonRequestManagedBot,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
+def _create_bot_keyboard() -> ReplyKeyboardMarkup:
+    """Keyboard that triggers Telegram's managed bot creation dialog."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(
+                text="➕ Create a Managed Bot",
+                request_managed_bot=KeyboardButtonRequestManagedBot(),
+            )
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 @main_router.message(CommandStart())
 async def controller_start(message: Message) -> None:
-    """Greet the user and offer the 'Create New Bot' action."""
     name = message.from_user.first_name if message.from_user else "there"
     await message.answer(
-        f"👋 Hi {name}! Welcome to the <b>TME</b> bot platform.\n\n"
-        "Here you can spin up your own custom Telegram bot in seconds. "
-        "Tap the button below to get started.",
-        reply_markup=_controller_menu(),
+        f"👋 Hi {name}! Welcome to TME.\n\n"
+        "Tap the button below to create your own Telegram bot.",
+        reply_markup=_create_bot_keyboard(),
     )
 
 
@@ -70,3 +81,45 @@ async def on_create_bot(callback: CallbackQuery) -> None:
         )
     user_id = callback.from_user.id if callback.from_user else "?"
     logger.info("User %s initiated managed-bot creation", user_id)
+
+@main_router.managed_bot_updated()
+async def on_managed_bot_updated(
+    event: ManagedBotUpdated,
+    bot: Bot,
+) -> None:
+    owner_id = event.user.id
+    managed_bot_id = event.bot.id
+    username = event.bot.username
+    first_name = event.bot.first_name
+    
+    logger.info(
+        "ManagedBotUpdated: owner=%s managed_bot_id=%s username=@%s",
+        owner_id, managed_bot_id, username,
+    )
+    
+    try:
+        token: str = await bot(GetManagedBotToken(user_id=managed_bot_id))
+    except TelegramAPIError as exc:
+        logger.error("getManagedBotToken failed: %s", exc)
+        return
+    
+    await provision_managed_bot(
+        token=token,
+        owner_telegram_id=owner_id,
+        owner_username=event.user.username,
+        owner_first_name=event.user.first_name,
+    )
+    
+    await bot.send_message(
+        chat_id=owner_id,
+        text=f"✅ Your bot @{username} is live! Try sending it /start.",
+    )
+
+from aiogram.types import ManagedBotCreated
+
+@main_router.message(F.managed_bot_created)
+async def on_managed_bot_created_message(message: Message) -> None:
+    """Service message confirming the bot creation was initiated."""
+    # This fires before the ManagedBotUpdated update arrives.
+    # No action needed — provisioning happens in on_managed_bot_updated.
+    logger.info("ManagedBotCreated service message received")

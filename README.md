@@ -166,6 +166,7 @@ If your Bot API build lacks `getManagedBotToken`, the call raises
 provisioning pipeline (persist bot → prime cache → register webhook) works
 independently and can be driven directly via `provision_managed_bot(...)`.
 
+- Managed Bots were officially added in Bot API 9.6 on April 3, 2026.
 ---
 
 ## Project structure

@@ -150,7 +150,9 @@ async def telegram_webhook(
             # --- Controller bot -------------------------------------------
             # Undocumented update type: handled out-of-band from the raw dict.
             if "managed_bot" in data:
-                await handle_managed_bot(data, main_bot)
+                # Route through normal aiogram dispatcher — it will find the handler above.
+                update = Update.model_validate(data, context={"bot": main_bot})
+                await main_dp.feed_update(bot=main_bot, update=update)
                 return JSONResponse({"ok": True})
 
             update = Update.model_validate(data, context={"bot": main_bot})
