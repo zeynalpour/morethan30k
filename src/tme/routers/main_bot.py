@@ -81,8 +81,8 @@ async def on_create_bot(callback: CallbackQuery) -> None:
     logger.info("User %s initiated managed-bot creation", user_id)
 
 
-@main_router.managed_bot_updated()
-async def on_managed_bot_updated(
+@main_router.managed_bot()
+async def on_managed_bot(
     event: ManagedBotUpdated,
     bot: Bot,
 ) -> None:
