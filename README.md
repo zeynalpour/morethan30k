@@ -147,26 +147,55 @@ hard-coded per-bot text.
 
 ---
 
-## ⚠️ Important: `ManagedBotUpdated` / `getManagedBotToken`
+## Managed Bots — official Bot API support
 
-The spec's `ManagedBotUpdated` update and `getManagedBotToken` method are **not
-part of the standard, publicly documented Telegram Bot API / aiogram 3.x** at
-the time of writing. They are implemented exactly as specified, but behind a
-clearly-marked seam so they are trivial to correct once the real API surface is
-confirmed:
+Managed Bots are an **official, documented** part of the Telegram Bot API,
+added in **Bot API 9.6 on April 3, 2026**, and are **fully supported by
+aiogram 3.x** — this project runs aiogram 3.30.0, which ships native types and
+methods for them.
 
-- `src/tme/services/managed_bots.py` → `GetManagedBotToken` is a custom aiogram
-  `TelegramMethod`. Field names are a best-effort guess — **verify against the
-  live API**.
-- `managed_bot` is dispatched from the raw update dict in the gateway
-  (aiogram's typed `Update` won't carry an unknown field).
+### The update — `ManagedBotUpdated`
 
-If your Bot API build lacks `getManagedBotToken`, the call raises
-`TelegramBadRequest`; it's caught and logged so the gateway stays up. The
+> This object contains information about the creation, token update, or owner
+> update of a bot that is managed by the current bot.
+
+It's delivered as `Update.managed_bot` and carries just two fields:
+
+| Field      | Type   | Description                                       |
+| ---------- | ------ | ------------------------------------------------- |
+| `user`     | `User` | The user who created / now owns the managed bot.  |
+| `bot_user` | `User` | The bot managed by the current bot.               |
+
+Subscribe to it via `allowed_updates=["message", "callback_query", "managed_bot"]`
+(the gateway already does this in `src/tme/main.py`).
+
+### The methods
+
+| Method                                                       | Description                                                     |
+| ------------------------------------------------------------ | --------------------------------------------------------------- |
+| `getManagedBotToken(user_id)`                                | Return the token of a managed bot → `String`.                   |
+| `replaceManagedBotToken(user_id)`                            | Revoke the current token and generate a new one → new `String`. |
+| `getManagedBotAccessSettings(user_id)`                       | Return access settings → `BotAccessSettings`.                   |
+| `setManagedBotAccessSettings(user_id, is_access_restricted, added_user_ids)` | Change access settings → `True`.                    |
+
+Reference: <https://core.telegram.org/bots/api#managedbotupdated> ·
+<https://core.telegram.org/bots/api#getmanagedbottoken>
+
+### Implementation status
+
+`src/tme/services/managed_bots.py` still ships a hand-rolled
+`GetManagedBotToken` written before aiogram added native support. Its signature
+(`user_id: int` → token `str`) matches the official method exactly, so the
+behaviour is already correct — it can simply be swapped for the native
+`aiogram.methods.GetManagedBotToken`. Likewise, `handle_managed_bot` reads the
+raw update dict defensively, but aiogram's typed `Update` now does carry
+`managed_bot` (`Update.managed_bot: ManagedBotUpdated | None`), so that can be
+migrated to the typed path too.
+
+If a Bot API build lacks these methods, the calls raise
+`TelegramBadRequest`; they're caught and logged so the gateway stays up. The
 provisioning pipeline (persist bot → prime cache → register webhook) works
 independently and can be driven directly via `provision_managed_bot(...)`.
-
-- Managed Bots were officially added in Bot API 9.6 on April 3, 2026.
 ---
 
 ## Project structure
