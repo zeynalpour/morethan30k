@@ -9,6 +9,8 @@ bots** (tenants). Every tenant's behaviour is driven by a JSON config that lives
 in Postgres, is cached in Redis, and is executed by one shared aiogram
 dispatcher.
 
+➡️ See the **[ROADMAP.md](ROADMAP.md)** for the prioritized, phased feature plan.
+
 ---
 
 ## Architecture at a glance
