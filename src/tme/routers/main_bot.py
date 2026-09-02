@@ -102,14 +102,33 @@ async def on_managed_bot(
         token: str = await bot(GetManagedBotToken(user_id=managed_bot_id))
     except TelegramAPIError as exc:
         logger.error("getManagedBotToken failed: %s", exc)
+        await bot.send_message(
+            chat_id=owner_id,
+            text=(
+                "⚠️ I couldn't fetch your new bot's token right now. "
+                "Please try again in a few seconds — it may still be propagating "
+                "on Telegram's side."
+            ),
+        )
         return
 
-    await provision_managed_bot(
-        token=token,
-        owner_telegram_id=owner_id,
-        owner_username=event.user.username,
-        owner_first_name=event.user.first_name,
-    )
+    try:
+        await provision_managed_bot(
+            token=token,
+            owner_telegram_id=owner_id,
+            owner_username=event.user.username,
+            owner_first_name=event.user.first_name,
+        )
+    except Exception:
+        logger.exception("provision_managed_bot failed for bot_id=%s", managed_bot_id)
+        await bot.send_message(
+            chat_id=owner_id,
+            text=(
+                "❌ Something went wrong while wiring up your bot. I've logged the "
+                "error and will look into it. Please try creating it again in a moment."
+            ),
+        )
+        return
 
     await bot.send_message(
         chat_id=owner_id,

@@ -13,6 +13,7 @@ April 3, 2026) and aiogram 3.x native support.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from aiogram.exceptions import TelegramAPIError
@@ -27,6 +28,13 @@ from tme.database.models import Bot as BotModel, BotConfig, User
 from tme.schemas.bot_config import BotConfigSchema
 
 logger = get_logger(__name__)
+
+# Webhook registration tuning — mirrors the main-bot retry policy in main.py.
+# A freshly created managed bot's token is subject to Telegram-side
+# eventual consistency, so the first setWebhook call can fail or not persist.
+_WEBHOOK_REGISTER_ATTEMPTS = 5
+_WEBHOOK_RETRY_BASE_DELAY = 2.0  # seconds; capped exponential backoff.
+_WEBHOOK_RETRY_MAX_DELAY = 30.0
 
 
 async def _upsert_owner(
@@ -101,23 +109,95 @@ async def provision_managed_bot(
     # Prime the cache so the very first user update is already a hit.
     await set_bot_config(token, default_config)
 
-    # Register the webhook so Telegram routes this bot's updates to us.
-    await register_webhook(token)
+    # Register the webhook so Telegram routes this bot's updates to us. The
+    # result is surfaced in the logs but does not fail provisioning — the bot is
+    # persisted and cached even if Telegram-side eventual consistency delays the
+    # webhook; callers can retry later.
+    webhook_ok = await register_webhook(token)
+    if not webhook_ok:
+        logger.warning("Webhook not yet registered for managed bot …%s", token[-6:])
 
     logger.info("Provisioned managed bot @%s (tg=%s)", username, telegram_bot_id)
     return bot_row
 
 
-async def register_webhook(token: str) -> None:
-    """Point a bot's Telegram webhook at our universal gateway endpoint."""
+async def register_webhook(token: str) -> bool:
+    """Point a bot's Telegram webhook at our universal gateway endpoint.
+
+    Retries with capped exponential backoff (a fresh managed bot's token can be
+    subject to Telegram-side eventual consistency, so the first attempt may fail
+    or not persist), then **verifies** via ``getWebhookInfo`` that the URL stuck.
+    Returns ``True`` on success. On final failure returns ``False`` and leaves
+    ``webhook_registered`` untouched so callers can surface a degraded state.
+    """
+    target_url = settings.webhook_url_for(token)
     tenant_bot = get_tenant_bot(token)
-    await tenant_bot.set_webhook(
-        url=settings.webhook_url_for(token),
-        secret_token=settings.webhook_secret.get_secret_value(),
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"],
+
+    for attempt in range(1, _WEBHOOK_REGISTER_ATTEMPTS + 1):
+        try:
+            await tenant_bot.set_webhook(
+                url=target_url,
+                secret_token=settings.webhook_secret.get_secret_value(),
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query", "managed_bot"],
+            )
+        except TelegramAPIError as exc:
+            logger.warning(
+                "setWebhook attempt %d/%d failed for …%s: %s",
+                attempt,
+                _WEBHOOK_REGISTER_ATTEMPTS,
+                token[-6:],
+                exc,
+            )
+        else:
+            # Verify the webhook actually registered (catches the case where
+            # Telegram accepted the call but hasn't persisted it yet).
+            try:
+                info = await tenant_bot.get_webhook_info()
+                if info.url == target_url:
+                    logger.info("Registered webhook for …%s: %s", token[-6:], target_url)
+                    async with session_scope() as session:
+                        result = await session.execute(
+                            select(BotModel).where(BotModel.token == token)
+                        )
+                        if (row := result.scalar_one_or_none()) is not None:
+                            row.webhook_registered = True
+                    return True
+                logger.warning(
+                    "setWebhook attempt %d/%d returned OK but getWebhookInfo url "
+                    "mismatch for …%s (got %r, want %r)%s",
+                    attempt,
+                    _WEBHOOK_REGISTER_ATTEMPTS,
+                    token[-6:],
+                    info.url,
+                    target_url,
+                    (
+                        f"; last error: {info.last_error_message}"
+                        if info.last_error_message
+                        else ""
+                    ),
+                )
+            except TelegramAPIError as exc:
+                logger.warning(
+                    "getWebhookInfo failed for …%s on attempt %d/%d: %s",
+                    token[-6:],
+                    attempt,
+                    _WEBHOOK_REGISTER_ATTEMPTS,
+                    exc,
+                )
+
+        if attempt < _WEBHOOK_REGISTER_ATTEMPTS:
+            delay = min(
+                _WEBHOOK_RETRY_BASE_DELAY * 2 ** (attempt - 1),
+                _WEBHOOK_RETRY_MAX_DELAY,
+            )
+            await asyncio.sleep(delay)
+
+    logger.error(
+        "Giving up registering webhook for …%s after %d attempts; target %s "
+        "(bot will not receive updates until this is resolved)",
+        token[-6:],
+        _WEBHOOK_REGISTER_ATTEMPTS,
+        target_url,
     )
-    async with session_scope() as session:
-        result = await session.execute(select(BotModel).where(BotModel.token == token))
-        if (row := result.scalar_one_or_none()) is not None:
-            row.webhook_registered = True
+    return False
