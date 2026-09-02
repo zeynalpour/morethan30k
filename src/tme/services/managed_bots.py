@@ -171,11 +171,7 @@ async def register_webhook(token: str) -> bool:
                     token[-6:],
                     info.url,
                     target_url,
-                    (
-                        f"; last error: {info.last_error_message}"
-                        if info.last_error_message
-                        else ""
-                    ),
+                    (f"; last error: {info.last_error_message}" if info.last_error_message else ""),
                 )
             except TelegramAPIError as exc:
                 logger.warning(

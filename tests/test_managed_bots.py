@@ -13,10 +13,13 @@ from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
 
+from tme.config import settings
 import tme.services.managed_bots as svc
 
 TOKEN = "123456789:FAKE_TOKEN"
-TARGET_URL = f"https://test.example.com/webhook/{TOKEN}"
+# Derived from settings so the test matches whatever WEBHOOK_BASE_URL the
+# environment provides (CI injects its own value; setdefault must not win).
+TARGET_URL = settings.webhook_url_for(TOKEN)
 
 
 class _FakeWebhookInfo:
