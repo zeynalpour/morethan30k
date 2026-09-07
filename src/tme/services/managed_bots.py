@@ -24,8 +24,8 @@ from tme.core.bot_registry import get_tenant_bot
 from tme.core.cache import set_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
-from tme.database.models import Bot as BotModel, BotConfig, User
-from tme.schemas.bot_config import BotConfigSchema
+from tme.database.models import Bot as BotModel, BotConfig, BotType, User
+from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig, HelloBotConfig
 
 logger = get_logger(__name__)
 
@@ -35,6 +35,21 @@ logger = get_logger(__name__)
 _WEBHOOK_REGISTER_ATTEMPTS = 5
 _WEBHOOK_RETRY_BASE_DELAY = 2.0  # seconds; capped exponential backoff.
 _WEBHOOK_RETRY_MAX_DELAY = 30.0
+
+
+def _default_config_for(bot_type: BotType) -> BotConfigSchema:
+    """Return a starter config appropriate to a bot's type.
+
+    Generic bots get the familiar rich starter. Hello/Echo add their type
+    defaults so a freshly-provisioned bot already behaves like its kind before
+    the management UI tunes it.
+    """
+    if bot_type is BotType.HELLO:
+        return HelloBotConfig(greeting="Hello there! 👋")
+    if bot_type is BotType.ECHO:
+        return EchoBotConfig(echo_prefix="🔁 ")
+    return BotConfigSchema.default()
+
 
 
 async def _upsert_owner(
@@ -60,12 +75,15 @@ async def provision_managed_bot(
     owner_telegram_id: int,
     owner_username: str | None = None,
     owner_first_name: str | None = None,
+    bot_type: BotType = BotType.GENERIC,
 ) -> BotModel:
     """Persist a newly-created tenant bot and make it live.
 
-    Steps: fetch identity via ``getMe`` → upsert owner + Bot + default config in
-    Postgres → prime the Redis cache → register the per-bot webhook. Idempotent
-    on ``token`` (re-provisioning an existing token updates it in place).
+    Steps: fetch identity via ``getMe`` → upsert owner + tenant + default config
+    in Postgres → prime the Redis cache → register the per-bot webhook.
+    Idempotent on ``token`` (re-provisioning an existing token updates it in
+    place). ``bot_type`` selects the config variant; the default is a generic
+    tenant bot.
     """
     tenant_bot = get_tenant_bot(token)
 
@@ -79,7 +97,7 @@ async def provision_managed_bot(
         logger.warning("getMe failed for new bot …%s: %s", token[-6:], exc)
 
     telegram_bot_id = int(token.split(":", 1)[0])
-    default_config = BotConfigSchema.default()
+    default_config = _default_config_for(bot_type)
 
     async with session_scope() as session:
         owner = await _upsert_owner(
@@ -99,6 +117,7 @@ async def provision_managed_bot(
                 title=title,
                 owner_id=owner.id,
                 is_active=True,
+                bot_type=bot_type,
             )
             bot_row.config = BotConfig(flow=default_config.model_dump())
             session.add(bot_row)

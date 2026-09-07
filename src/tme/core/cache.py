@@ -23,7 +23,7 @@ from tme.core.logging import get_logger
 from tme.core.redis_client import redis_client
 from tme.database.engine import session_scope
 from tme.database.models import Bot
-from tme.schemas.bot_config import BotConfigSchema
+from tme.schemas.bot_config import BotConfigSchema, dump_bot_config, parse_bot_config
 
 logger = get_logger(__name__)
 
@@ -46,7 +46,7 @@ async def _load_from_db(bot_token: str, session: AsyncSession) -> BotConfigSchem
     if bot is None or bot.config is None:
         return None
     # Validate on the way out of the DB so a corrupt row can't poison the cache.
-    return BotConfigSchema.model_validate(bot.config.flow)
+    return parse_bot_config(bot.config.flow)
 
 
 async def get_bot_config(bot_token: str) -> BotConfigSchema | None:
@@ -60,7 +60,7 @@ async def get_bot_config(bot_token: str) -> BotConfigSchema | None:
     if cached is not None:
         if cached == _NEGATIVE:
             return None
-        return BotConfigSchema.model_validate_json(cached)
+        return parse_bot_config(orjson.loads(cached))
 
     # Miss → hit Postgres, then populate Redis.
     async with session_scope() as session:
@@ -73,7 +73,7 @@ async def get_bot_config(bot_token: str) -> BotConfigSchema | None:
 
     await redis_client.set(
         key,
-        config.model_dump_json().encode(),
+        dump_bot_config(config),
         ex=settings.config_cache_ttl,
     )
     logger.debug("Warmed config cache for bot …%s", bot_token[-6:])
@@ -84,7 +84,7 @@ async def set_bot_config(bot_token: str, config: BotConfigSchema) -> None:
     """Write a config straight into the cache (used right after provisioning)."""
     await redis_client.set(
         _cache_key(bot_token),
-        config.model_dump_json().encode(),
+        dump_bot_config(config),
         ex=settings.config_cache_ttl,
     )
 

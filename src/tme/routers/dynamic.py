@@ -4,6 +4,11 @@ There is **one** router instance shared by every tenant bot. It contains no
 hard-coded copy; instead each handler reads the per-bot ``bot_config`` that
 :class:`tme.middlewares.config_middleware.ConfigMiddleware` injected from Redis.
 That is what makes one codebase behave like thousands of distinct bots.
+
+The router dispatches on :attr:`bot_config.bot_type` (the discriminant parsed by
+:func:`tme.schemas.bot_config.parse_bot_config`): generic tenants get the familiar
+welcome+menu flow, Hello bots greet by name, and Echo bots bounce every
+non-command message back.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from aiogram.types import (
 )
 
 from tme.core.logging import get_logger
-from tme.schemas.bot_config import BotConfigSchema
+from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig, HelloBotConfig
 
 logger = get_logger(__name__)
 
@@ -40,11 +45,22 @@ def _build_menu(config: BotConfigSchema) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _greeting_for(config: BotConfigSchema) -> str:
+    """Return the text to send on /start for a given config.
+
+    Hellos use their dedicated greeting; everything else (generic, echo, bridge,
+    ai_gateway, legacy) falls back to ``welcome_message``.
+    """
+    if isinstance(config, HelloBotConfig):
+        return config.greeting
+    return config.welcome_message
+
+
 @dynamic_router.message(CommandStart())
 async def on_start(message: Message, bot_config: BotConfigSchema) -> None:
-    """Reply to /start with the tenant's configured welcome + menu."""
+    """Reply to /start with the tenant's configured greeting + menu."""
     await message.answer(
-        text=bot_config.welcome_message,
+        text=_greeting_for(bot_config),
         reply_markup=_build_menu(bot_config),
     )
 
@@ -71,5 +87,16 @@ async def on_menu_click(callback: CallbackQuery, bot_config: BotConfigSchema) ->
 
 @dynamic_router.message()
 async def on_fallback(message: Message, bot_config: BotConfigSchema) -> None:
-    """Any other message → the tenant's configured fallback text."""
-    await message.answer(bot_config.fallback_message)
+    """Any non-menu message → dispatch by tenant type.
+
+    - Echo   : mirror the user's text back (with optional prefix).
+    - Hello  : re-greet once again (keeps the bot on-message).
+    - default: the configured fallback text.
+    """
+    if isinstance(bot_config, EchoBotConfig):
+        prefix = bot_config.echo_prefix
+        await message.answer(f"{prefix}{message.text or message.caption or ''}")
+    elif isinstance(bot_config, HelloBotConfig):
+        await message.answer(bot_config.greeting)
+    else:
+        await message.answer(bot_config.fallback_message)

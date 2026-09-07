@@ -11,13 +11,45 @@ the JSON flow that the dynamic router executes at runtime.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import BigInteger, Boolean, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tme.database.base import Base
+
+
+class BotType(StrEnum):
+    """Typed bot categories — the flow engine dispatches per kind.
+
+    Each value maps to a dedicated config variant (see
+    :mod:`tme.schemas.bot_config`). The enum lives here because it is a
+    database concern (the ``bots.bot_type`` column), but it is intentionally
+    importable from the schema layer too.
+    """
+
+    GENERIC = "generic"
+    HELLO = "hello"
+    ECHO = "echo"
+    BRIDGE = "bridge"
+    AI_GATEWAY = "ai_gateway"
+
+
+#: Postgres enum type backing ``bots.bot_type``. ``create_type=True`` lets
+#: ``Base.metadata.create_all`` (dev) create it; Alembic migration ``0002``
+#: creates it explicitly for the real schema.
+_bot_type_enum = ENUM(
+    BotType.GENERIC,
+    BotType.HELLO,
+    BotType.ECHO,
+    BotType.BRIDGE,
+    BotType.AI_GATEWAY,
+    name="bot_type",
+    create_type=True,
+    sort_order=False,
+)
 
 
 class User(Base):
@@ -65,6 +97,11 @@ class Bot(Base):
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    #: Typed category — drives the flow-engine dispatch (defaults to generic).
+    bot_type: Mapped[BotType] = mapped_column(
+        _bot_type_enum, default=BotType.GENERIC, nullable=False
+    )
+
     #: Owner (the User who created this bot via the Main Bot).
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
@@ -85,15 +122,16 @@ class Bot(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<Bot id={self.id} tg={self.telegram_bot_id} @{self.username} active={self.is_active}>"
+            f"<Bot id={self.id} tg={self.telegram_bot_id} @{self.username} "
+            f"active={self.is_active} type={self.bot_type}>"
         )
 
 
 class BotConfig(Base):
     """The JSON flow / behaviour configuration for one :class:`Bot`.
 
-    ``flow`` is stored as JSONB and validated against
-    :class:`tme.schemas.bot_config.BotConfigSchema` at the service layer.
+    ``flow`` is stored as JSONB and validated against the per-type config schema
+    (see :mod:`tme.schemas.bot_config`) at the service layer.
     """
 
     __tablename__ = "bot_configs"
