@@ -12,11 +12,19 @@ Pins two production bugs:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from aiogram.types import ManagedBotUpdated, User
 
-from tme.routers.main_bot import _create_bot_keyboard, on_managed_bot
+from tme.database.models import BotType
+from tme.routers import main_bot as main_router_module
+from tme.routers.main_bot import (
+    _create_bot_keyboard,
+    _type_picker_keyboard,
+    on_managed_bot,
+    on_pick_type,
+)
 
 
 def _make_event() -> ManagedBotUpdated:
@@ -35,9 +43,11 @@ def test_create_bot_keyboard_is_valid() -> None:
     assert button.text == "➕ Create a Managed Bot"
 
 
-def test_managed_bot_handler_provisions_via_native_method(monkeypatch) -> None:
-    """The typed handler must fetch the token and provision the bot."""
+def test_managed_bot_handler_asks_for_type(monkeypatch) -> None:
+    """The typed handler fetches the token, then asks for a type — no provisioning yet."""
     event = _make_event()
+    pending: dict = {}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
 
     # ``bot(GetManagedBotToken(...))`` returns the token; send_message is free.
     fake_bot = AsyncMock(return_value="123456789:FAKE_TOKEN")
@@ -46,15 +56,111 @@ def test_managed_bot_handler_provisions_via_native_method(monkeypatch) -> None:
 
     asyncio.run(on_managed_bot(event, fake_bot))
 
+    # The token is held back, not provisioned, until the owner picks a type.
+    provision.assert_not_awaited()
+    assert pending == {42: "123456789:FAKE_TOKEN"}
+
+    # The owner was sent the type picker.
+    fake_bot.send_message.assert_awaited_once()
+    send_kwargs = fake_bot.send_message.await_args.kwargs
+    assert send_kwargs["chat_id"] == 42
+    picker = send_kwargs["reply_markup"]
+    labels = [b.callback_data for row in picker.inline_keyboard for b in row]
+    assert labels == ["pick:generic", "pick:hello", "pick:echo"]
+
+
+def test_type_picker_keyboard_is_valid() -> None:
+    """The picker must offer every provisionable behaviour type."""
+    kb = _type_picker_keyboard()
+    labels = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert labels == ["pick:generic", "pick:hello", "pick:echo"]
+
+
+def test_pick_type_provisions_with_chosen_type(monkeypatch) -> None:
+    """Picking a type provisions the pending bot with it and confirms."""
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data="pick:echo",
+        answer=AsyncMock(),
+    )
+    pending = {42: "123456789:FAKE_TOKEN"}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
+    provision = AsyncMock(return_value=SimpleNamespace(username="echo_bot"))
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_type(callback, fake_bot))
+
     provision.assert_awaited_once()
     call_kwargs = provision.await_args.kwargs
     assert call_kwargs["token"] == "123456789:FAKE_TOKEN"
     assert call_kwargs["owner_telegram_id"] == 42
-    assert call_kwargs["owner_first_name"] == "Owner"
-    assert call_kwargs["owner_username"] == "owner_user"
+    assert call_kwargs["bot_type"] is BotType.ECHO
+    assert 42 not in pending  # consumed by the pick
 
-    # The owner was told their bot is live.
+    callback.answer.assert_awaited_once()
     fake_bot.send_message.assert_awaited_once()
     send_kwargs = fake_bot.send_message.await_args.kwargs
     assert send_kwargs["chat_id"] == 42
-    assert "@test_bot" in send_kwargs["text"]
+    assert "@echo_bot" in send_kwargs["text"]
+
+
+def test_pick_type_without_pending_answers_expired(monkeypatch) -> None:
+    """A stale pick (no pending token) must not provision anything."""
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data="pick:hello",
+        answer=AsyncMock(),
+    )
+    monkeypatch.setattr(main_router_module, "_PENDING", {})
+    provision = AsyncMock()
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_type(callback, fake_bot))
+
+    provision.assert_not_awaited()
+    fake_bot.send_message.assert_not_awaited()
+    callback.answer.assert_awaited_once()
+
+
+def test_pick_type_isolation_other_owner(monkeypatch) -> None:
+    """User B picking must never reach user A's pending token."""
+    attacker = SimpleNamespace(
+        from_user=SimpleNamespace(id=99, username="b", first_name="B"),
+        data="pick:echo",
+        answer=AsyncMock(),
+    )
+    pending = {42: "VICTIM_TOKEN"}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
+    provision = AsyncMock()
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_type(attacker, fake_bot))
+
+    provision.assert_not_awaited()
+    fake_bot.send_message.assert_not_awaited()
+    attacker.answer.assert_awaited_once()
+    assert pending == {42: "VICTIM_TOKEN"}  # untouched
+
+
+def test_pick_type_provision_failure_restores_token(monkeypatch) -> None:
+    """On provisioning failure the token goes back to pending for a re-pick."""
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data="pick:hello",
+        answer=AsyncMock(),
+    )
+    pending = {42: "123456789:FAKE_TOKEN"}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
+    provision = AsyncMock(side_effect=RuntimeError("db down"))
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_type(callback, fake_bot))
+
+    assert pending == {42: "123456789:FAKE_TOKEN"}  # restored for re-pick
+    fake_bot.send_message.assert_awaited_once()
+    text = fake_bot.send_message.await_args.kwargs["text"]
+    assert "Tap your chosen type again" in text

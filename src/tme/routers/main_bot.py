@@ -12,12 +12,16 @@ through ``main_dp``.
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.methods import GetManagedBotToken
 from aiogram.types import (
     CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     KeyboardButtonRequestManagedBot,
     ManagedBotUpdated,
@@ -26,6 +30,7 @@ from aiogram.types import (
 )
 
 from tme.core.logging import get_logger
+from tme.database.models import BotType
 from tme.services.managed_bots import provision_managed_bot
 
 logger = get_logger(__name__)
@@ -33,6 +38,24 @@ logger = get_logger(__name__)
 main_router = Router(name="main_controller")
 
 _CREATE_BOT = "create_bot"
+
+# --- Managed-bot type picker -------------------------------------------------
+# Callback-data suffix → (button caption, tenant behaviour type). Both the
+# picker keyboard and the callback handler derive from this single source so
+# they can never drift when a new type is added.
+_PICK_PREFIX = "pick:"
+_TYPE_CHOICES: dict[str, tuple[str, BotType]] = {
+    "generic": ("🧩 Generic", BotType.GENERIC),
+    "hello": ("👋 Hello", BotType.HELLO),
+    "echo": ("🔁 Echo", BotType.ECHO),
+}
+
+#: Tokens of freshly-created managed bots awaiting their owner's type choice,
+#: keyed by owner Telegram id. In-memory on purpose (single-process gateway);
+#: a restart drops pendings harmlessly — the unprovisioned bot simply never
+#: gets a webhook until recreated. A second creation while one is pending
+#: replaces the first (the abandoned bot stays unprovisioned).
+_PENDING: dict[int, str] = {}
 
 
 def _create_bot_keyboard() -> ReplyKeyboardMarkup:
@@ -48,6 +71,21 @@ def _create_bot_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
+    )
+
+
+def _type_picker_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard offering the tenant behaviour types (from _TYPE_CHOICES)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=display,
+                    callback_data=f"{_PICK_PREFIX}{label}",
+                )
+                for label, (display, _) in _TYPE_CHOICES.items()
+            ]
+        ]
     )
 
 
@@ -112,27 +150,69 @@ async def on_managed_bot(
         )
         return
 
+    # Hold the token until the owner picks a behaviour type; the picker's
+    # callback handler does the actual provisioning.
+    _PENDING[owner_id] = token
+    await bot.send_message(
+        chat_id=owner_id,
+        text=("🤖 Your new bot is ready!\n\nPick its behaviour — you can change it later:"),
+        reply_markup=_type_picker_keyboard(),
+    )
+
+
+@main_router.callback_query(F.data.startswith(_PICK_PREFIX))
+async def on_pick_type(callback: CallbackQuery, bot: Bot) -> None:
+    """Provision the pending managed bot with the owner's chosen type."""
+    if callback.from_user is None:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Something went wrong — please try again.")
+        return
+
+    # The router filter guarantees a non-empty data, but the model types it
+    # optional — normalize for the type checker.
+    raw = callback.data or ""
+    choice = _TYPE_CHOICES.get(raw.removeprefix(_PICK_PREFIX))
+    if choice is None:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Unknown bot type.")
+        return
+
+    _, bot_type = choice
+    token = _PENDING.pop(callback.from_user.id, None)
+    if token is None:
+        with suppress(TelegramBadRequest):
+            await callback.answer("That request expired — tap “Create a Managed Bot” again.")
+        return
+
+    with suppress(TelegramBadRequest):
+        await callback.answer()
     try:
-        await provision_managed_bot(
+        bot_row = await provision_managed_bot(
             token=token,
-            owner_telegram_id=owner_id,
-            owner_username=event.user.username,
-            owner_first_name=event.user.first_name,
+            owner_telegram_id=callback.from_user.id,
+            owner_username=callback.from_user.username,
+            owner_first_name=callback.from_user.first_name,
+            bot_type=bot_type,
         )
     except Exception:
-        logger.exception("provision_managed_bot failed for bot_id=%s", managed_bot_id)
+        logger.exception("provision_managed_bot failed for owner=%s", callback.from_user.id)
+        # Provisioning is idempotent on token — put it back so the owner can
+        # simply re-pick instead of recreating the bot from scratch.
+        _PENDING[callback.from_user.id] = token
         await bot.send_message(
-            chat_id=owner_id,
+            chat_id=callback.from_user.id,
             text=(
-                "❌ Something went wrong while wiring up your bot. I've logged the "
-                "error and will look into it. Please try creating it again in a moment."
+                "❌ Something went wrong while wiring up your bot. "
+                "Tap your chosen type again to retry — or create it anew "
+                "if it keeps failing."
             ),
         )
         return
 
+    display = f"@{bot_row.username}" if bot_row.username else "your bot"
     await bot.send_message(
-        chat_id=owner_id,
-        text=f"✅ Your bot @{username} is live! Try sending it /start.",
+        chat_id=callback.from_user.id,
+        text=f"✅ {display} is live! Try sending it /start.",
     )
 
 
