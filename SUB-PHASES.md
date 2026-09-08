@@ -54,14 +54,16 @@ ai_gateway | …`. Foundational for every new bot kind.
 
 **Checklist**
 
-- [ ] Add `bot_type` column / enum to the `Bot` model + migration.
-- [ ] Define the per-type config union in `schemas/bot_config.py`.
-- [ ] Wire `BotType` into provisioning + dynamic router dispatch.
+- [x] Add `bot_type` column / enum to the `Bot` model + migration.
+- [x] Define the per-type config union in `schemas/bot_config.py`.
+- [x] Wire `BotType` into provisioning + dynamic router dispatch.
 
 **Acceptance criteria**
 
-- A provisioned bot carries a type; the flow engine dispatches on it.
-- Alembic migration is generated and applied.
+- A provisioned bot carries a type; the flow engine dispatches on it. ✅
+- Alembic migration is generated and applied. ✅ (`0002_bot_type`)
+- ✅ Landed: `0cf9f50` (enum + union) and `aa918f4` (sibling config variants);
+  the controller bot's type picker ships Generic/Hello/Echo (`5c2e1f9`).
 
 ### S0.3 — Secret Vault (tokens + API keys at rest)
 
@@ -83,8 +85,38 @@ envelope encryption). AI gateway bots need key storage immediately.
 
 **Checklist**
 
-- [ ] ROADMAP Phase 0 items flip 🟡/⚪ → 🟢 as S0.x completes.
-- [ ] SUB-PHASES stays the canonical checklist for the current phase.
+- [x] ROADMAP Phase 0 items flip 🟡/⚪ → 🟢 as S0.x completes.
+- [x] SUB-PHASES stays the canonical checklist for the current phase.
+
+---
+
+## Phase 8 — Per-user bot settings (BotFather-style mini app)
+
+### S8.1 — Owner settings editor (MVP)
+
+**Context.** Every bot owner should manage their own bots from a settings UI
+(BotFather-style) instead of raw JSON. A React frontend scaffold is already
+in-tree (bolt-new PR: `src/App.tsx`, `BotList`, `ConfigEditor`,
+`MenuButtonsEditor`, `BotHeader`, `src/lib/supabase.ts`) and must be wired to
+the backend.
+
+**Checklist**
+
+- [ ] Pick the management plane: FastAPI CRUD API vs direct Supabase writes —
+      single source of truth + Redis-cache invalidation argue for the API;
+      speed argues for Supabase-direct.
+- [ ] Owner-only access: auth binds to `users.telegram_id`; users list and
+      edit only their own bots.
+- [ ] Settings editor: bot type, welcome message, menu buttons, fallback text
+      → write `bot_configs.flow`, invalidate the cache.
+- [ ] Bot status view: webhook state, active toggle, username/title.
+- [ ] Isolation + cache-invalidation integration tests.
+
+**Acceptance criteria**
+
+- A user sees only bots they own; edits go live within seconds (cache
+  invalidated).
+- No token or secret is ever exposed to the frontend.
 
 ---
 
@@ -94,6 +126,8 @@ envelope encryption). AI gateway bots need key storage immediately.
   preference, `I18nMiddleware`, main bot i18n.
 - **Phase 2 — Starter bots & template library** — Hello World, Echo, Feedback,
   Quiz; templates seed configs from a registry.
+- **Phase 8 — Per-user bot settings** — BotFather-style settings UI (see S8.1
+  above; currently in focus).
 
 Full checklists for these phases are written here when we start them.
 
@@ -101,4 +135,5 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S0.2** (`BotType` enum + per-type config union)
+**→ S8.1** (owner bot-settings editor — BotFather-style; build on the merged
+bolt-new frontend). S0.2 is done — see its checklist for what landed.

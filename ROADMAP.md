@@ -33,9 +33,9 @@ as work progresses; PRs should reference the phase they belong to.
 - 🟢 **Remove the raw-dict `managed_bot` interception** in
   `src/tme/main.py` so the native, typed `@main_router.managed_bot()` handler
   actually runs in production. (See `SUB-PHASES.md` → S0.1.)
-- ⚪ **`BotType` enum + per-type config union** — one `Bot` table holding typed
-  configs: `generic | hello | echo | bridge | ai_gateway | …`. 💡
-  *Foundational for every new bot kind below.*
+- 🟢 **`BotType` enum + per-type config union** — one `Bot` table holding typed
+  configs: `generic | hello | echo | bridge | ai_gateway | …`. (S0.2 — the
+  controller bot's create flow now offers Generic/Hello/Echo.)
 - ⚪ **Secret Vault** — encrypt bot tokens & API keys at rest (e.g. `pgcrypto`
   or app-level envelope encryption) from day one. AI gateway bots need key
   storage immediately. 💡
@@ -123,6 +123,27 @@ as work progresses; PRs should reference the phase they belong to.
 - ⚪ Credit packs via Telegram Stars, paid templates, teams/collab. 💡
   *Plugs straight into the metering service.*
 - ⚪ Public REST API for config CRUD.
+
+---
+
+## Phase 8 — Per-user bot settings (BotFather-style mini app)
+
+Every bot owner manages **their own bots** in a settings UI — BotFather-style —
+instead of raw JSON. Builds on the merged bolt-new React frontend
+(`src/App.tsx`, `BotList`, `ConfigEditor`, `MenuButtonsEditor`, `BotHeader`).
+
+- ⚪ **Owner-only access** — Telegram-first auth (WebApp initData / Supabase
+  auth bound to `users.telegram_id`); a user sees only bots they own.
+- ⚪ **Settings editor** — bot type, welcome message, menu buttons, fallback
+  text; edits write `bot_configs.flow` and invalidate the Redis cache.
+- ⚪ **Bot status view** — webhook state, active toggle, username/title.
+- 🧭 **Config history & rollback** — reuses `BotConfigSchema.version`.
+- 🧭 **Template gallery integration** — pick a template on create (Phase 2).
+
+*Architecture decision pending (blocks S8.1):* the merged frontend reads
+Supabase directly while the backend keeps Postgres as the system of record.
+Pick one management plane — FastAPI CRUD API (single source of truth + cache
+invalidation) vs Supabase-direct (faster to ship, two write paths).
 
 ---
 
