@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
 
 from tme.config import settings
+from tme.database.models import BotType
+from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig
 import tme.services.managed_bots as svc
 
 TOKEN = "123456789:FAKE_TOKEN"
@@ -129,3 +132,112 @@ def test_register_webhook_retries_on_api_error(monkeypatch) -> None:
     assert result is False
     assert bot.set_webhook.await_count == 2
     assert records == []
+
+
+def test_provision_primes_cache_with_persisted_config(monkeypatch) -> None:
+    """Re-provisioning must cache the persisted config, not a fresh per-type default.
+
+    Regression: the cache was primed with ``_default_config_for(bot_type)`` even
+    when an existing row was updated in place, so a re-provisioned bot (whose
+    stored config may be user-customized, or of a different type than this
+    call's ``bot_type``) could serve behaviour contradicting the DB until the
+    cache TTL expired.
+    """
+    persisted_flow = {"bot_type": "generic", "welcome_message": "user-customized"}
+    row = SimpleNamespace(
+        token=TOKEN,
+        telegram_bot_id=123456789,
+        username="custombot",
+        title="Custom Bot",
+        owner_id=1,
+        is_active=True,
+        bot_type=BotType.GENERIC,
+        config=SimpleNamespace(flow=persisted_flow),
+    )
+
+    calls = {"n": 0}
+
+    class _Session:
+        async def execute(self, _statement):
+            calls["n"] += 1
+            # 1st call = owner lookup (exists), 2nd = bot lookup (existing row).
+            return _FakeResult(SimpleNamespace(id=1) if calls["n"] == 1 else row)
+
+        async def flush(self):
+            return None
+
+    @asynccontextmanager
+    async def scope():
+        yield _Session()
+
+    cached: list = []
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(username="custombot", full_name="Custom Bot")
+
+    async def fake_set(_token, config):
+        cached.append(config)
+
+    monkeypatch.setattr(svc, "get_tenant_bot", lambda _token: bot)
+    monkeypatch.setattr(svc, "session_scope", scope)
+    monkeypatch.setattr(svc, "register_webhook", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, "set_bot_config", fake_set)
+
+    asyncio.run(
+        svc.provision_managed_bot(
+            token=TOKEN,
+            owner_telegram_id=42,
+            bot_type=BotType.ECHO,  # must NOT clobber the persisted generic config
+        )
+    )
+
+    assert len(cached) == 1
+    cfg = cached[0]
+    assert isinstance(cfg, BotConfigSchema)
+    assert not isinstance(cfg, EchoBotConfig)
+    assert cfg.bot_type is BotType.GENERIC
+    assert cfg.welcome_message == "user-customized"
+
+
+def test_provision_new_bot_primes_cache_with_type_default(monkeypatch) -> None:
+    """A brand-new bot gets its per-type default config primed into the cache."""
+    cached: list = []
+
+    class _Session:
+        async def execute(self, _statement):
+            # owner lookup → None (create), bot lookup → None (create).
+            return _FakeResult(None)
+
+        def add(self, obj):
+            self._added = obj
+
+        async def flush(self):
+            if getattr(self, "_added", None) is not None and self._added.id is None:
+                self._added.id = 1  # mimic the real flush: assign the surrogate PK
+
+    @asynccontextmanager
+    async def scope():
+        yield _Session()
+
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(username="newbot", full_name="New Bot")
+
+    async def fake_set(_token, config):
+        cached.append(config)
+
+    monkeypatch.setattr(svc, "get_tenant_bot", lambda _token: bot)
+    monkeypatch.setattr(svc, "session_scope", scope)
+    monkeypatch.setattr(svc, "register_webhook", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, "set_bot_config", fake_set)
+
+    asyncio.run(
+        svc.provision_managed_bot(
+            token=TOKEN,
+            owner_telegram_id=42,
+            bot_type=BotType.ECHO,
+        )
+    )
+
+    assert len(cached) == 1
+    cfg = cached[0]
+    assert isinstance(cfg, EchoBotConfig)
+    assert cfg.echo_prefix == "🔁 "

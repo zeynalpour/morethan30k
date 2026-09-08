@@ -25,7 +25,13 @@ from tme.core.cache import set_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotConfig, BotType, User
-from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig, HelloBotConfig
+from tme.schemas.bot_config import (
+    BotConfigSchema,
+    BotConfigUnion,
+    EchoBotConfig,
+    HelloBotConfig,
+    parse_bot_config,
+)
 
 logger = get_logger(__name__)
 
@@ -37,7 +43,7 @@ _WEBHOOK_RETRY_BASE_DELAY = 2.0  # seconds; capped exponential backoff.
 _WEBHOOK_RETRY_MAX_DELAY = 30.0
 
 
-def _default_config_for(bot_type: BotType) -> BotConfigSchema:
+def _default_config_for(bot_type: BotType) -> BotConfigUnion:
     """Return a starter config appropriate to a bot's type.
 
     Generic bots get the familiar rich starter. Hello/Echo add their type
@@ -124,8 +130,17 @@ async def provision_managed_bot(
             bot_row.username, bot_row.title, bot_row.is_active = username, title, True
         await session.flush()
 
-    # Prime the cache so the very first user update is already a hit.
-    await set_bot_config(token, default_config)
+    # Prime the cache with EXACTLY what was persisted. A fresh per-type default
+    # would diverge from an existing row (whose config may be user-customized,
+    # or of a different type than this call's `bot_type`) and serve stale
+    # behaviour until the cache TTL expired. For a legacy row with no
+    # BotConfig at all, fall back to the default for the row's OWN type.
+    persisted_flow = (
+        bot_row.config.flow
+        if bot_row.config is not None
+        else _default_config_for(bot_row.bot_type).model_dump()
+    )
+    await set_bot_config(token, parse_bot_config(persisted_flow))
 
     # Register the webhook so Telegram routes this bot's updates to us. The
     # result is surfaced in the logs but does not fail provisioning — the bot is

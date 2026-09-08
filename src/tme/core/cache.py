@@ -23,7 +23,7 @@ from tme.core.logging import get_logger
 from tme.core.redis_client import redis_client
 from tme.database.engine import session_scope
 from tme.database.models import Bot
-from tme.schemas.bot_config import BotConfigSchema, dump_bot_config, parse_bot_config
+from tme.schemas.bot_config import BotConfigUnion, dump_bot_config, parse_bot_config
 
 logger = get_logger(__name__)
 
@@ -37,7 +37,7 @@ def _cache_key(bot_token: str) -> str:
     return f"botcfg:{bot_token}"
 
 
-async def _load_from_db(bot_token: str, session: AsyncSession) -> BotConfigSchema | None:
+async def _load_from_db(bot_token: str, session: AsyncSession) -> BotConfigUnion | None:
     """Load and validate a bot's config from Postgres, or ``None`` if absent."""
     result = await session.execute(
         select(Bot).where(Bot.token == bot_token, Bot.is_active.is_(True))
@@ -49,7 +49,7 @@ async def _load_from_db(bot_token: str, session: AsyncSession) -> BotConfigSchem
     return parse_bot_config(bot.config.flow)
 
 
-async def get_bot_config(bot_token: str) -> BotConfigSchema | None:
+async def get_bot_config(bot_token: str) -> BotConfigUnion | None:
     """Return a tenant bot's config, using Redis as a read-through cache.
 
     Returns ``None`` if the token maps to no active bot (also negatively cached).
@@ -80,7 +80,7 @@ async def get_bot_config(bot_token: str) -> BotConfigSchema | None:
     return config
 
 
-async def set_bot_config(bot_token: str, config: BotConfigSchema) -> None:
+async def set_bot_config(bot_token: str, config: BotConfigUnion) -> None:
     """Write a config straight into the cache (used right after provisioning)."""
     await redis_client.set(
         _cache_key(bot_token),

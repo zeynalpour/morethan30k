@@ -39,18 +39,19 @@ class MenuButton(BaseModel):
     )
 
 
-class BotConfigSchema(BaseModel):
-    """The **generic** config — also the base for every other variant.
+class BotConfigBase(BaseModel):
+    """Shared fields for every bot-config variant.
 
-    It is the historical ``BotConfigSchema``; the MVP flow engine only consumes
-    ``welcome_message`` and ``menu_buttons``, but the surrounding fields
-    (versioning, active modules, arbitrary extras) let the schema grow without a
-    migration. ``bot_type`` is the discriminator used by :class:`BotConfigUnion`.
+    The MVP flow engine only consumes ``welcome_message`` and ``menu_buttons``,
+    but the surrounding fields (versioning, active modules, arbitrary extras)
+    let the schema grow without a migration. Each variant declares its own
+    ``bot_type`` discriminator (used by :class:`BotConfigUnion`); the variants
+    are **siblings**, not subclasses of the generic config, so a Hello config
+    can never be typed as (or mistaken for) a generic one.
     """
 
     model_config = ConfigDict(extra="allow")  # forward-compat: keep unknown keys.
 
-    bot_type: Literal[BotType.GENERIC] = BotType.GENERIC
     version: int = Field(default=1, ge=1, description="Config schema version.")
     welcome_message: str = Field(
         default="👋 Welcome!",
@@ -69,6 +70,16 @@ class BotConfigSchema(BaseModel):
         description="Reply used when no rule matches the incoming update.",
     )
 
+
+class BotConfigSchema(BotConfigBase):
+    """The **generic** config — the most feature-rich, forward-compatible variant.
+
+    It is the historical ``BotConfigSchema`` and the fallback for legacy rows.
+    ``bot_type`` is the discriminator used by :class:`BotConfigUnion`.
+    """
+
+    bot_type: Literal[BotType.GENERIC] = BotType.GENERIC
+
     @classmethod
     def default(cls) -> BotConfigSchema:
         """Return a sensible starter config for a freshly-provisioned bot."""
@@ -81,8 +92,8 @@ class BotConfigSchema(BaseModel):
         )
 
 
-class HelloBotConfig(BotConfigSchema):
-    """A conversational greeting bot — nice extras on top of the generic base."""
+class HelloBotConfig(BotConfigBase):
+    """A conversational greeting bot — nice extras on top of the common base."""
 
     bot_type: Literal[BotType.HELLO] = BotType.HELLO
     greeting: str = Field(
@@ -91,7 +102,7 @@ class HelloBotConfig(BotConfigSchema):
     )
 
 
-class EchoBotConfig(BotConfigSchema):
+class EchoBotConfig(BotConfigBase):
     """Echoes every non-command message back to the sender."""
 
     bot_type: Literal[BotType.ECHO] = BotType.ECHO
@@ -111,13 +122,13 @@ BotConfigUnion = Annotated[
 ]
 
 # BRIDGE and AI_GATEWAY are declared on the enum but have no dedicated schema
-# yet — they validate against the generic BotConfigSchema (via the generic
-# variant, which also resolves a missing ``bot_type``). Add dedicated classes
-# here (plus the matching enum member in :mod:`tme.database.models`) as those
-# phases land.
+# yet — an explicit ``bot_type`` for them fails the strict union and falls back
+# to the generic variant via :func:`parse_bot_config` (which also resolves a
+# missing ``bot_type``). Add dedicated classes here (plus the matching enum
+# member in :mod:`tme.database.models`) as those phases land.
 
 
-def parse_bot_config(data: dict) -> BotConfigSchema:
+def parse_bot_config(data: dict) -> BotConfigUnion:
     """Parse a stored flow dict into the right typed variant.
 
     ``data`` is a raw dictionary as persisted in ``bot_configs.flow`` / Redis.
@@ -131,12 +142,16 @@ def parse_bot_config(data: dict) -> BotConfigSchema:
     except ValidationError:
         # Missing/invalid discriminator → legacy row (or an as-yet-unmodelled
         # type); fall back to the generic base. Drop any malformed bot_type so
-        # the generic variant's literal default (generic) applies.
+        # the generic variant's literal default (generic) applies. A wholly
+        # non-dict flow (corrupt JSONB) degrades to the generic default too —
+        # a config must never become unroutable at read time.
+        if not isinstance(data, dict):
+            data = {}
         safe = {k: v for k, v in data.items() if k != "bot_type"}
         return BotConfigSchema.model_validate(safe)
 
 
-def dump_bot_config(config: BotConfigSchema) -> bytes:
+def dump_bot_config(config: BotConfigUnion) -> bytes:
     """Serialise a config for the Redis cache.
 
     Every parsed config already carries its ``bot_type`` discriminator (the

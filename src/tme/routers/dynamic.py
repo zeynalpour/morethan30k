@@ -23,14 +23,14 @@ from aiogram.types import (
 )
 
 from tme.core.logging import get_logger
-from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig, HelloBotConfig
+from tme.schemas.bot_config import BotConfigUnion, EchoBotConfig, HelloBotConfig
 
 logger = get_logger(__name__)
 
 dynamic_router = Router(name="dynamic_tenant")
 
 
-def _build_menu(config: BotConfigSchema) -> InlineKeyboardMarkup | None:
+def _build_menu(config: BotConfigUnion) -> InlineKeyboardMarkup | None:
     """Render a tenant's ``menu_buttons`` into an inline keyboard (one per row)."""
     if not config.menu_buttons:
         return None
@@ -45,7 +45,7 @@ def _build_menu(config: BotConfigSchema) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _greeting_for(config: BotConfigSchema) -> str:
+def _greeting_for(config: BotConfigUnion) -> str:
     """Return the text to send on /start for a given config.
 
     Hellos use their dedicated greeting; everything else (generic, echo, bridge,
@@ -57,7 +57,7 @@ def _greeting_for(config: BotConfigSchema) -> str:
 
 
 @dynamic_router.message(CommandStart())
-async def on_start(message: Message, bot_config: BotConfigSchema) -> None:
+async def on_start(message: Message, bot_config: BotConfigUnion) -> None:
     """Reply to /start with the tenant's configured greeting + menu."""
     await message.answer(
         text=_greeting_for(bot_config),
@@ -66,7 +66,7 @@ async def on_start(message: Message, bot_config: BotConfigSchema) -> None:
 
 
 @dynamic_router.callback_query(F.data)
-async def on_menu_click(callback: CallbackQuery, bot_config: BotConfigSchema) -> None:
+async def on_menu_click(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
     """Handle a menu button press.
 
     MVP behaviour: echo which node was selected and re-render the menu. A richer
@@ -86,7 +86,7 @@ async def on_menu_click(callback: CallbackQuery, bot_config: BotConfigSchema) ->
 
 
 @dynamic_router.message()
-async def on_fallback(message: Message, bot_config: BotConfigSchema) -> None:
+async def on_fallback(message: Message, bot_config: BotConfigUnion) -> None:
     """Any non-menu message → dispatch by tenant type.
 
     - Echo   : mirror the user's text back (with optional prefix).
