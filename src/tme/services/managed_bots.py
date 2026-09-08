@@ -51,7 +51,6 @@ def _default_config_for(bot_type: BotType) -> BotConfigSchema:
     return BotConfigSchema.default()
 
 
-
 async def _upsert_owner(
     session: Any,
     *,
