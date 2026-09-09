@@ -65,13 +65,18 @@ export default function App() {
     const tg = window.Telegram?.WebApp;
     const initData =
       tg?.initData ||
-      // Fallback: Telegram also passes initData as the tgWebAppData query
-      // param on the initial WebView URL.
+      // Telegram injects initData into the URL hash (#tgWebAppData=...) on
+      // the WebView's first load; read it directly in case the platform
+      // script hasn't populated the object yet.
+      new URLSearchParams(window.location.hash.slice(1)).get("tgWebAppData") ||
       new URLSearchParams(window.location.search).get("tgWebAppData") ||
       "";
     if (!initData) {
+      const hashHint = window.location.hash
+        ? ` hash present (${window.location.hash.slice(1, 40)}…)`
+        : " no hash";
       setErrorMsg(
-        `This dashboard opens only as a Mini App inside Telegram — tap “🚀 Open Dashboard” in the Main Bot. If it still fails, fully restart the Telegram app. (URL received: "${window.location.search}")`
+        `This dashboard opens only as a Mini App inside Telegram — tap “🚀 Open Dashboard” in the Main Bot, or use the 🚀 Dashboard menu button / bot-profile Mini App. If it still fails, fully restart the Telegram app. (URL: "${window.location.search}"${hashHint})`
       );
       setView("error");
       return;

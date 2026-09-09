@@ -89,6 +89,13 @@ def _bot(*, config_flow: dict | None = None) -> SimpleNamespace:
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
+def test_dashboard_served_at_root() -> None:
+    """The BotFather-registered domain root hosts the dashboard (profile Mini App)."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+
 def test_missing_auth_401() -> None:
     assert client.get("/api/bots").status_code == 401
 
