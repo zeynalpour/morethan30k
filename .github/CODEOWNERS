@@ -1,0 +1,14 @@
+# Default owner — reviews everything not matched below.
+# Keeps a human gate on every PR until the team grows.
+*           @zeynalpour
+
+# Architecture and the flow-engine core are the highest-blast-radius
+# surfaces — always reviewed by the owner.
+/docs/architecture/  @zeynalpour
+/src/tme/routers/    @zeynalpour
+/src/tme/schemas/    @zeynalpour
+/src/tme/database/   @zeynalpour
+/alembic/            @zeynalpour
+
+# CI and deploy pipelines.
+/.github/            @zeynalpour
