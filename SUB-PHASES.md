@@ -123,8 +123,8 @@ cache invalidation; Supabase drops out of the data path.
   preference, `I18nMiddleware`, main bot i18n.
 - **Phase 2 — Starter bots & template library** — Hello World, Echo, Feedback,
   Quiz; templates seed configs from a registry.
-- **Phase 8 — Per-user bot settings** — BotFather-style settings UI (working
-  sub-phase S0.4; currently in focus).
+- **Phase 8 — Per-user bot settings** — extended vision beyond the S0.4 MVP:
+  config history/rollback, template gallery, dashboard analytics.
 
 Full checklists for these phases are written here when we start them.
 

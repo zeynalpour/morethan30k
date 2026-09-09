@@ -36,6 +36,16 @@ as work progresses; PRs should reference the phase they belong to.
 - 🟢 **`BotType` enum + per-type config union** — one `Bot` table holding typed
   configs: `generic | hello | echo | bridge | ai_gateway | …`. (S0.2 — the
   controller bot's create flow now offers Generic/Hello/Echo.)
+- 🟡 **Per-user bot-settings dashboard (BotFather-style mini app)** — every
+  owner manages their own bots from a settings UI: owner-only API
+  (`/api/bots*`), dashboard link issued by the Main Bot, settings editor.
+  (S0.4 — MVP in progress; builds on the merged bolt-new React frontend.
+  Extended vision: Phase 8.)
+  *Architecture decision (resolved, S0.4):* management plane is the FastAPI
+  CRUD API — single source of truth + Redis-cache invalidation. Direct
+  Supabase writes were rejected: they cannot invalidate the Redis config
+  cache, would expose `bots.token` to the browser, and split the source of
+  truth.
 - ⚪ **Secret Vault** — encrypt bot tokens & API keys at rest (e.g. `pgcrypto`
   or app-level envelope encryption) from day one. AI gateway bots need key
   storage immediately. 💡
@@ -126,24 +136,16 @@ as work progresses; PRs should reference the phase they belong to.
 
 ---
 
-## Phase 8 — Per-user bot settings (BotFather-style mini app)
+## Phase 8 — Per-user bot settings: extended vision
 
-Every bot owner manages **their own bots** in a settings UI — BotFather-style —
-instead of raw JSON. Builds on the merged bolt-new React frontend
-(`src/App.tsx`, `BotList`, `ConfigEditor`, `MenuButtonsEditor`, `BotHeader`).
+The BotFather-style settings **MVP** ships in Phase 0 as **S0.4** (owner-only
+API + Main Bot dashboard link + settings UI). This phase holds what comes
+after it:
 
-- ⚪ **Owner-only access** — Telegram-first auth (WebApp initData / Supabase
-  auth bound to `users.telegram_id`); a user sees only bots they own.
-- ⚪ **Settings editor** — bot type, welcome message, menu buttons, fallback
-  text; edits write `bot_configs.flow` and invalidate the Redis cache.
-- ⚪ **Bot status view** — webhook state, active toggle, username/title.
 - 🧭 **Config history & rollback** — reuses `BotConfigSchema.version`.
 - 🧭 **Template gallery integration** — pick a template on create (Phase 2).
-
-*Architecture decision (resolved, S0.4):* management plane is the FastAPI CRUD
-API — single source of truth + Redis-cache invalidation. Direct Supabase
-writes were rejected: they cannot invalidate the Redis config cache, would
-expose `bots.token` to the browser, and split the source of truth.
+- 🧭 **Per-bot analytics in the dashboard** — active users, messages (feeds
+  the Phase 7 dashboard).
 
 ---
 
