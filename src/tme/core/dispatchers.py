@@ -17,6 +17,7 @@ from aiogram import Dispatcher
 
 from tme.core.storage import storage
 from tme.middlewares.config_middleware import ConfigMiddleware
+from tme.middlewares.i18n_middleware import I18nMiddleware
 from tme.routers.dynamic import dynamic_router
 from tme.routers.main_bot import main_router
 
@@ -32,8 +33,10 @@ def build_tenant_dispatcher() -> Dispatcher:
     """Dispatcher shared by every tenant bot, with config injection."""
     dp = Dispatcher(storage=storage)
     # Register on the update observer so it runs once per update, ahead of
-    # message/callback filtering.
+    # message/callback filtering. ConfigMiddleware first (I18nMiddleware may
+    # skip its lookup for single-language bots), then I18n.
     dp.update.outer_middleware(ConfigMiddleware())
+    dp.update.outer_middleware(I18nMiddleware())
     dp.include_router(dynamic_router)
     return dp
 

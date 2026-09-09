@@ -26,6 +26,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
     Object.keys(flow.translations || {})[0] ?? null
   );
   const [newLang, setNewLang] = useState("");
+  const [singleLanguage, setSingleLanguage] = useState(!!flow.single_language);
   const [menuButtons, setMenuButtons] = useState<MenuButtonData[]>(
     Array.isArray(flow.menu_buttons) ? flow.menu_buttons : []
   );
@@ -105,12 +106,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
         .map((m) => m.trim())
         .filter(Boolean),
       translations: cleanedTranslations,
+      single_language: singleLanguage,
     };
     if (isHello) newFlow.greeting = greeting;
     if (isEcho) newFlow.echo_prefix = echoPrefix;
     onSave(newFlow);
     setSaving(false);
-  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, greeting, echoPrefix, isHello, isEcho, onSave]);
+  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, singleLanguage, greeting, echoPrefix, isHello, isEcho, onSave]);
 
   return (
     <div className="px-4 py-4 space-y-5">
@@ -178,6 +180,19 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
         title="Translations"
         subtitle="Users see the bot in their Telegram language — per field: user language → English → base"
       >
+        <label
+          className="flex items-center gap-2 text-sm mb-3"
+          style={{ color: "var(--tg-text)" }}
+        >
+          <input
+            type="checkbox"
+            checked={singleLanguage}
+            onChange={(e) => setSingleLanguage(e.target.checked)}
+          />
+          Single-language mode — ignore translations & user language (always use
+          the base copy)
+        </label>
+
         <div className="flex flex-wrap gap-1.5 items-center">
           {Object.keys(translations).map((lang) => (
             <button

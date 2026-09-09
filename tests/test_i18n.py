@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import TypeAdapter, ValidationError
 import pytest
 
-from tme.core.i18n import localize, normalize_language
+from tme.core.i18n import effective_language, localize, normalize_language
 from tme.schemas.bot_config import BotConfigUnion
 
 
@@ -37,6 +37,15 @@ def test_normalize_language_collapses_to_iso639_1() -> None:
     assert normalize_language("pt_br") == "pt"
     assert normalize_language(None) == ""
     assert normalize_language("") == ""
+
+
+# ---------------------------------------------------------- effective language
+def test_effective_language_preference_wins_over_telegram() -> None:
+    assert effective_language("fa", "en-US") == "fa"
+    assert effective_language(None, "en-US") == "en"
+    assert effective_language("", "de") == "de"
+    assert effective_language(None, None) is None
+    assert effective_language("", None) is None
 
 
 # ---------------------------------------------------------------- localize
@@ -108,6 +117,24 @@ def test_echo_prefix_localizes() -> None:
     )
     assert localize(cfg, "fa").echo_prefix == "« "
     assert localize(cfg, "de").echo_prefix == ">> "
+
+
+# ------------------------------------------------------------ single-language
+def test_single_language_bot_ignores_translations_and_user_language() -> None:
+    cfg = TypeAdapter(BotConfigUnion).validate_python(
+        {
+            "bot_type": "generic",
+            "single_language": True,
+            "welcome_message": "Base only",
+            "translations": {
+                "en": {"welcome_message": "English"},
+                "fa": {"welcome_message": "فارسی"},
+            },
+        }
+    )
+    assert localize(cfg, "fa").welcome_message == "Base only"
+    assert localize(cfg, "en").welcome_message == "Base only"
+    assert localize(cfg, None).welcome_message == "Base only"
 
 
 # ------------------------------------------------------------------ schema

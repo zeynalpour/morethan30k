@@ -157,16 +157,31 @@ cache invalidation; Supabase drops out of the data path.
 - Translation edits go live within seconds (same Redis-cache invalidation
   path as any config edit).
 
-### S1.2 — Per-user language preference *(planned)*
+### S1.2 — Per-user language preference  *(done)*
 
 **Checklist**
 
-- [ ] Persist a user's language choice — `users.language_code` column
-      (migration) defaulted from Telegram's `language_code` on first contact.
-- [ ] `/language` command with an inline-flag picker on tenant bots; choice
-      overrides the Telegram default.
-- [ ] `I18nMiddleware` on the tenant router — formalizes what S1.1 reads
-      inline and covers callback-only sessions too.
+- [x] `user_languages` table (migration 0004) — explicit preference keyed by
+      Telegram id, covering both owners and tenant-bot users.
+- [x] `services/user_language.py`: get/set with Redis read-through cache.
+- [x] `/language` (+ `/lang`) command on tenant bots with an inline flag
+      picker (en, fa, de, ru, ar, es, fr, tr, zh, hi, id, pt); the choice
+      overrides the Telegram default for every bot the user chats with.
+- [x] `I18nMiddleware` on the tenant dispatcher: resolves stored preference →
+      Telegram `language_code` and injects `language_code` into handlers;
+      skips the lookup for single-language bots.
+- [x] Owner toggle **single-language mode** (`single_language` in the flow):
+      the bot speaks ONLY its base copy — translations and user language are
+      ignored. Dashboard checkbox.
+- [x] Tests: `effective_language` ordering, single-language bypass, picker
+      handlers, middleware (preference wins / telegram fallback / skip), and a
+      real-DB+Redis round-trip in the integration suite. 91 total green.
+
+**Acceptance criteria**
+
+- Changing Telegram's UI language re-locates the bot only when it has that
+  translation; a user can force any of the 12 picker languages per-account.
+- A single-language bot never localizes, regardless of user preference.
 
 ### S1.3 — Main bot (control plane) i18n *(planned)*
 
@@ -190,6 +205,6 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S1.1** (per-bot translations) is done — S0.1–S0.4 are complete (see their
-checklists). Next: S1.2 (per-user language preference + `/language` +
-`I18nMiddleware`).
+**→ S1.1 + S1.2 are done** (per-bot translations, per-user `/language`
+preference, `I18nMiddleware`, single-language mode) — S0.1–S0.4 complete.
+Next: S1.3 (main-bot / control-plane i18n).

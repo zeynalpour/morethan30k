@@ -74,6 +74,13 @@ class BotConfigBase(BaseModel):
     model_config = ConfigDict(extra="allow")  # forward-compat: keep unknown keys.
 
     version: int = Field(default=1, ge=1, description="Config schema version.")
+    single_language: bool = Field(
+        default=False,
+        description=(
+            "When true the bot speaks ONLY its base copy — translations and "
+            "user language are ignored (owner-enforced single-language mode)."
+        ),
+    )
     translations: dict[str, Translation] = Field(
         default_factory=dict,
         description=(

@@ -58,12 +58,15 @@ as work progresses; PRs should reference the phase they belong to.
 - 🟢 Per-bot translations in `BotConfig.flow`:
   `translations: {en, fa, ru, ar, de, es, fr, tr, zh, hi, id, pt, …}` — S1.1:
   validated per-language overrides + dashboard editor. ✅
-- ⚪ Per-user language preference — default from Telegram's `language_code`;
-  `/language` inline-flag picker to switch. (S1.2 — auto-detection already
-  ships in S1.1; persistence + picker next.)
-- ⚪ `I18nMiddleware` on the tenant router so every handler reads the user's
+- 🟢 Per-user language preference — default from Telegram's `language_code`;
+  `/language` inline-flag picker to switch. ✅ (S1.2: `user_languages` table +
+  Redis-cached service; the picker overrides the Telegram default per account.)
+- 🟢 `I18nMiddleware` on the tenant router so every handler reads the user's
   language. The **main bot (control plane) translates too** — so GOD works the
-  platform in GOD's language. 💡 (S1.2/S1.3)
+  platform in GOD's language. 💡 (middleware done in S1.2; main-bot copy is
+  S1.3)
+- 🟢 Owner-enforced **single-language mode** — a bot with `single_language`
+  checked speaks only its base copy. ✅ (S1.2 dashboard toggle)
 - 🟢 "Copy-from-base" editor helper — seed a new language from an existing one
   instead of translating from scratch. ✅ (S1.1)
 - 🟢 Fallback chain: user language → English → bot default, per field. ✅

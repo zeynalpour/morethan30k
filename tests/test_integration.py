@@ -41,7 +41,9 @@ from tme.core import cache as cache_module
 from tme.core.i18n import localize
 from tme.database import engine as engine_module
 from tme.database.models import Bot as BotModel, BotType
+from tme.services import user_language as user_language_module
 from tme.services.managed_bots import provision_managed_bot
+from tme.services.user_language import get_user_language, set_user_language
 
 REPO = Path(__file__).resolve().parents[1]
 ADMIN_URL = "postgresql://tme:tme@localhost:5432/tme"
@@ -133,6 +135,9 @@ def test_stack() -> Iterator[Run]:
     test_redis = aioredis.from_url(TEST_REDIS_URL, decode_responses=False)
     old_redis = cache_module.redis_client
     cache_module.redis_client = test_redis
+    # user_language binds redis_client at import time — repoint it too.
+    old_ul_redis = user_language_module.redis_client
+    user_language_module.redis_client = test_redis
 
     def run(coro: Awaitable[_T]) -> _T:
         return loop.run_until_complete(coro)
@@ -141,6 +146,7 @@ def test_stack() -> Iterator[Run]:
 
     engine_module.SessionFactory = old_factory
     cache_module.redis_client = old_redis
+    user_language_module.redis_client = old_ul_redis
     loop.run_until_complete(test_redis.flushdb())
     loop.run_until_complete(test_redis.aclose())
     loop.run_until_complete(test_engine.dispose())
@@ -246,3 +252,11 @@ def test_type_switch_resets_flow_to_defaults(test_stack, monkeypatch) -> None:
     live = test_stack(cache_module.get_bot_config(FAKE_TOKEN))
     assert live is not None
     assert live.bot_type == "echo"  # flow reset to echo default, cache re-read
+
+
+def test_user_language_preference_round_trip(test_stack) -> None:
+    """S1.2 /language storage works against the real DB + Redis cache."""
+    tg_id = 555001
+    assert test_stack(get_user_language(tg_id)) is None
+    test_stack(set_user_language(tg_id, "fa"))
+    assert test_stack(get_user_language(tg_id)) == "fa"

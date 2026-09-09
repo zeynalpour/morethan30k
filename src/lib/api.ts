@@ -39,6 +39,7 @@ export interface BotConfigFlow {
   greeting?: string;
   echo_prefix?: string;
   translations?: Record<string, Translation>;
+  single_language?: boolean;
 }
 
 export interface BotConfigRow {

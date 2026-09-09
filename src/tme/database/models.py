@@ -76,6 +76,26 @@ class User(Base):
         return f"<User id={self.id} tg={self.telegram_id} @{self.username}>"
 
 
+class UserLanguage(Base):
+    """A user's explicit language preference (Phase 1 S1.2).
+
+    Keyed by Telegram user id — covers BOTH bot owners and anyone chatting
+    with a tenant bot (tenant users are not rows in ``users``, which tracks
+    platform owners). Set via the ``/language`` picker; an absent row means
+    "follow the Telegram UI language".
+    """
+
+    __tablename__ = "user_languages"
+
+    #: Telegram user id (natural key, unique). Surrogate ``id`` comes from
+    #: ``Base`` like every other table.
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    language_code: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<UserLanguage id={self.id} tg={self.telegram_id} lang={self.language_code}>"
+
+
 class Bot(Base):
     """A single tenant (cloned) bot served by the universal webhook.
 

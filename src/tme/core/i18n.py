@@ -43,6 +43,19 @@ def normalize_language(language_code: str | None) -> str:
     return language_code.replace("_", "-").split("-", 1)[0].strip().lower()
 
 
+def effective_language(stored: str | None, telegram: str | None) -> str | None:
+    """The language that applies to a user: explicit choice wins.
+
+    ``stored`` is the user's ``/language`` preference (already normalized),
+    ``telegram`` their Telegram UI ``language_code``. Returns ``None`` when
+    neither yields anything (→ full fallback chain in :func:`localize`).
+    """
+    if stored:
+        return stored
+    normalized = normalize_language(telegram)
+    return normalized or None
+
+
 def localize(config: BotConfigUnion, language_code: str | None) -> LocalizedCopy:
     """Resolve the copy for a user's language (base → English → user wins).
 
@@ -57,6 +70,10 @@ def localize(config: BotConfigUnion, language_code: str | None) -> LocalizedCopy
         echo_prefix=config.echo_prefix if isinstance(config, EchoBotConfig) else "",
         menu_buttons=list(config.menu_buttons),
     )
+
+    # Single-language bots speak ONLY their base copy — no translation layers.
+    if config.single_language:
+        return copy
 
     # English first, then the user's own language — later layers win.
     layers = ["en"]
