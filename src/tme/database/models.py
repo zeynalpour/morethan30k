@@ -131,12 +131,11 @@ class Bot(Base):
 class DashboardAuthToken(Base):
     """A short-lived bearer credential that opens the bot-settings dashboard.
 
-    Issued by the Main Bot when an owner opens settings for one of their bots.
-    Binds a Telegram user (``owner_telegram_id``) to one bot (``bot_id``) for
-    a limited window; once validated, the settings API authorizes every
-    request against ``owner_telegram_id`` (the initial ``bot_id`` is the mini
-    app's default view). Only the SHA-256 hash of the token is stored — the
-    raw token exists exactly once, in the link the Main Bot sends.
+    .. deprecated::
+       Superseded by Telegram WebApp ``initData`` authentication
+       (:mod:`tme.services.auth`) — the dashboard is a Mini App and needs no
+       bearer tokens. The table is kept for migration history until S0.3
+       (Secret Vault) consolidates credential storage; no code writes to it.
     """
 
     __tablename__ = "dashboard_auth_tokens"

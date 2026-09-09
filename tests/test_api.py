@@ -19,8 +19,8 @@ from tme.database.models import BotType
 
 client = TestClient(main.app)
 
-_OWNER = SimpleNamespace(id=7, owner_telegram_id=42)
-_AUTH = {"Authorization": "Bearer any-token"}
+_OWNER_TELEGRAM_ID = 42
+_AUTH = {"X-Telegram-Init-Data": "any-init-data"}
 
 
 class _FakeScalars:
@@ -42,10 +42,15 @@ class _FakeResult:
         return _FakeScalars(self._value)
 
 
-def _install(monkeypatch, *, bot_row, auth_row=_OWNER, invalidate: AsyncMock | None = None):
-    """Fake the auth dependency, sessions, and cache invalidation."""
-    validate = AsyncMock(return_value=auth_row)
-    monkeypatch.setattr("tme.api.routes.validate_dashboard_token", validate)
+def _install(
+    monkeypatch,
+    *,
+    bot_row,
+    auth_id: int | None = _OWNER_TELEGRAM_ID,
+    invalidate: AsyncMock | None = None,
+):
+    """Fake the initData auth, sessions, and cache invalidation."""
+    monkeypatch.setattr("tme.api.routes.validate_telegram_init_data", lambda _h: auth_id)
 
     @asynccontextmanager
     async def scope():
@@ -89,8 +94,7 @@ def test_missing_auth_401() -> None:
 
 
 def test_invalid_token_401(monkeypatch) -> None:
-    validate = AsyncMock(return_value=None)
-    monkeypatch.setattr("tme.api.routes.validate_dashboard_token", validate)
+    monkeypatch.setattr("tme.api.routes.validate_telegram_init_data", lambda _h: None)
     assert client.get("/api/bots", headers=_AUTH).status_code == 401
 
 

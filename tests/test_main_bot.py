@@ -24,9 +24,9 @@ from tme.routers import main_bot as main_router_module
 from tme.routers.main_bot import (
     _create_bot_keyboard,
     _type_picker_keyboard,
+    on_dashboard_command,
     on_managed_bot,
     on_my_bots,
-    on_open_settings,
     on_pick_type,
     register_main_commands,
 )
@@ -173,42 +173,18 @@ def test_pick_type_provision_failure_restores_token(monkeypatch) -> None:
     assert "Tap your chosen type again" in text
 
 
-def test_open_settings_issues_dashboard_link(monkeypatch) -> None:
-    """Tapping 'Open Settings' issues a token and sends the dashboard link."""
-    callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="settings:7",
-        answer=AsyncMock(),
-    )
-    issue = AsyncMock(return_value="RAWTOKEN")
-    monkeypatch.setattr("tme.routers.main_bot.create_dashboard_token_for_owner", issue)
-    fake_bot = AsyncMock()
+def test_dashboard_command_sends_mini_app_button() -> None:
+    """'/dashboard' sends the 'Open Mini App' button for the home page."""
+    message = SimpleNamespace(answer=AsyncMock())
 
-    asyncio.run(on_open_settings(callback, fake_bot))
+    asyncio.run(on_dashboard_command(message))
 
-    issue.assert_awaited_once_with(bot_id=7, owner_telegram_id=42)
-    callback.answer.assert_awaited_once()
-    fake_bot.send_message.assert_awaited_once()
-    text = fake_bot.send_message.await_args.kwargs["text"]
-    assert "https://test.example.com/dashboard/?t=RAWTOKEN&bid=7" in text
-
-
-def test_open_settings_rejected_when_bot_not_owned(monkeypatch) -> None:
-    """Issuing a token for a bot the user doesn't own is refused."""
-    callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="settings:999",
-        answer=AsyncMock(),
-    )
-    issue = AsyncMock(return_value=None)
-    monkeypatch.setattr("tme.routers.main_bot.create_dashboard_token_for_owner", issue)
-    fake_bot = AsyncMock()
-
-    asyncio.run(on_open_settings(callback, fake_bot))
-
-    issue.assert_awaited_once()
-    fake_bot.send_message.assert_not_awaited()
-    callback.answer.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    kb = message.answer.await_args.kwargs["reply_markup"]
+    button = kb.inline_keyboard[0][0]
+    assert button.text == "🚀 Open Dashboard"
+    assert button.web_app is not None
+    assert button.web_app.url == "https://test.example.com/dashboard/"
 
 
 def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
@@ -225,8 +201,11 @@ def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
     fake_bot.send_message.assert_awaited_once()
     kb = fake_bot.send_message.await_args.kwargs["reply_markup"]
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert callbacks == ["settings:1", "settings:2"]
+    urls = [b.web_app.url for row in kb.inline_keyboard for b in row]
+    assert urls == [
+        "https://test.example.com/dashboard/?bid=1",
+        "https://test.example.com/dashboard/?bid=2",
+    ]
     assert labels[0] == "⚙️ @alpha"
     assert labels[1] == "⚙️ Bot #2"  # nameless bot falls back to its id
 
@@ -258,7 +237,7 @@ def test_register_main_commands_sends_command_menu() -> None:
     asyncio.run(register_main_commands(fake_bot))
     fake_bot.set_my_commands.assert_awaited_once()
     commands = fake_bot.set_my_commands.await_args.args[0]
-    assert [c.command for c in commands] == ["start", "mybots"]
+    assert [c.command for c in commands] == ["start", "mybots", "dashboard"]
 
 
 def test_register_main_commands_tolerates_api_error() -> None:

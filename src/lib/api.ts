@@ -47,7 +47,9 @@ export function setAuthToken(token: string): void {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+  // Telegram WebApp initData — signed with the bot token; the backend
+  // validates it on every request (see tme/services/auth.py).
+  if (authToken) headers.set("X-Telegram-Init-Data", authToken);
   if (init?.body) headers.set("Content-Type", "application/json");
 
   const res = await fetch(path, { ...init, headers });

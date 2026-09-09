@@ -46,6 +46,7 @@ export default function App() {
   const [bot, setBot] = useState<BotRow | null>(null);
   const [config, setConfig] = useState<BotConfigRow | null>(null);
   const [bots, setBots] = useState<BotRow[]>([]);
+  const [isHome, setIsHome] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
   const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
@@ -58,19 +59,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Auth comes from Telegram itself: the Mini App's initData, signed with
+    // the bot token. Without it (plain browser), the backend would reject us.
+    const initData = window.Telegram?.WebApp?.initData ?? "";
+    if (!initData) {
+      setErrorMsg(
+        "This dashboard opens inside Telegram — tap “🚀 Open Dashboard” in the Main Bot."
+      );
+      setView("error");
+      return;
+    }
+    setAuthToken(initData);
+
     const params = new URLSearchParams(window.location.search);
-    const token = params.get("t");
     const botIdParam = params.get("bid");
 
-    if (!token || !botIdParam) {
-      setErrorMsg("Missing authentication token. Please open this dashboard from the Main Bot.");
-      setView("error");
+    if (!botIdParam) {
+      // Home page: list every bot the user owns.
+      setIsHome(true);
+      (async () => {
+        try {
+          setBots(await api.listBots());
+          setView("bots");
+        } catch (e) {
+          setErrorMsg(e instanceof Error ? e.message : "Failed to load your bots.");
+          setView("error");
+        }
+      })();
       return;
     }
 
     const botId = parseInt(botIdParam, 10);
-    setAuthToken(token);
-
     (async () => {
       try {
         const botData = await api.getBot(botId);
@@ -82,7 +101,7 @@ export default function App() {
         setErrorMsg(
           e instanceof Error
             ? e.message
-            : "Failed to load dashboard. Please request a new link from the Main Bot."
+            : "Failed to load the dashboard. Please try again from the Main Bot."
         );
         setView("error");
       }
@@ -145,7 +164,7 @@ export default function App() {
     const tg = window.Telegram?.WebApp;
     if (!tg) return;
 
-    if (view === "bots") {
+    if (view === "bots" && !isHome) {
       tg.BackButton.show();
       const backHandler = () => setView("dashboard");
       tg.BackButton.onClick(backHandler);

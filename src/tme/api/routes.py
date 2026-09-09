@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tme.core.cache import invalidate_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
-from tme.database.models import Bot as BotModel, DashboardAuthToken, User
+from tme.database.models import Bot as BotModel, User
 from tme.schemas.bot_config import BotConfigUnion
-from tme.services.dashboard import validate_dashboard_token
+from tme.services.auth import validate_telegram_init_data
 
 logger = get_logger(__name__)
 
@@ -53,16 +53,17 @@ class ConfigUpdate(BaseModel):
 # Auth + shared helpers
 # --------------------------------------------------------------------------- #
 async def _require_auth(
-    authorization: str | None = Header(default=None),
-) -> DashboardAuthToken:
-    """Resolve the bearer token to a valid (unexpired) dashboard token row."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.removeprefix("Bearer ").strip()
-    row = await validate_dashboard_token(token)
-    if row is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return row
+    x_telegram_init_data: str | None = Header(default=None),
+) -> int:
+    """Resolve the caller's telegram id from the Mini App's ``initData``.
+
+    Telegram signs ``initData`` with the bot token, so a valid signature IS
+    the authentication — every endpoint then scopes to this owner id.
+    """
+    telegram_id = validate_telegram_init_data(x_telegram_init_data)
+    if telegram_id is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Telegram auth")
+    return telegram_id
 
 
 async def _load_owned_bot(
@@ -93,33 +94,33 @@ def _summarize(bot: BotModel) -> BotSummary:
 # Endpoints
 # --------------------------------------------------------------------------- #
 @router.get("/bots", response_model=list[BotSummary])
-async def list_bots(auth: DashboardAuthToken = Depends(_require_auth)) -> list[BotSummary]:
+async def list_bots(auth: int = Depends(_require_auth)) -> list[BotSummary]:
     """All bots owned by the authenticated user (newest first)."""
     async with session_scope() as session:
         result = await session.execute(
             select(BotModel)
             .join(BotModel.owner)
-            .where(User.telegram_id == auth.owner_telegram_id)
+            .where(User.telegram_id == auth)
             .order_by(BotModel.created_at.desc())
         )
         return [_summarize(bot) for bot in result.scalars()]
 
 
 @router.get("/bots/{bot_id}", response_model=BotSummary)
-async def get_bot(bot_id: int, auth: DashboardAuthToken = Depends(_require_auth)) -> BotSummary:
+async def get_bot(bot_id: int, auth: int = Depends(_require_auth)) -> BotSummary:
     """One owned bot (404 for bots that don't exist or aren't yours)."""
     async with session_scope() as session:
-        bot = await _load_owned_bot(session, bot_id, auth.owner_telegram_id)
+        bot = await _load_owned_bot(session, bot_id, auth)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     return _summarize(bot)
 
 
 @router.get("/bots/{bot_id}/config")
-async def get_bot_config(bot_id: int, auth: DashboardAuthToken = Depends(_require_auth)) -> dict:
+async def get_bot_config(bot_id: int, auth: int = Depends(_require_auth)) -> dict:
     """The bot's raw flow JSON (validated on write, served as stored here)."""
     async with session_scope() as session:
-        bot = await _load_owned_bot(session, bot_id, auth.owner_telegram_id)
+        bot = await _load_owned_bot(session, bot_id, auth)
     if bot is None or bot.config is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     return bot.config.flow
@@ -129,7 +130,7 @@ async def get_bot_config(bot_id: int, auth: DashboardAuthToken = Depends(_requir
 async def update_bot_config(
     bot_id: int,
     payload: ConfigUpdate,
-    auth: DashboardAuthToken = Depends(_require_auth),
+    auth: int = Depends(_require_auth),
 ) -> dict:
     """Replace the bot's flow (strictly validated), then invalidate the cache.
 
@@ -145,7 +146,7 @@ async def update_bot_config(
         ) from exc
 
     async with session_scope() as session:
-        bot = await _load_owned_bot(session, bot_id, auth.owner_telegram_id)
+        bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None or bot.config is None:
             raise HTTPException(status_code=404, detail="Bot not found")
         bot.config.flow = parsed.model_dump()
@@ -153,5 +154,5 @@ async def update_bot_config(
         token = bot.token  # captured before the session closes
 
     await invalidate_bot_config(token)
-    logger.info("Updated config for bot id=%s (owner tg=%s)", bot_id, auth.owner_telegram_id)
+    logger.info("Updated config for bot id=%s (owner tg=%s)", bot_id, auth)
     return bot.config.flow
