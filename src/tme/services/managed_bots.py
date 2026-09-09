@@ -32,6 +32,7 @@ from tme.schemas.bot_config import (
     HelloBotConfig,
     parse_bot_config,
 )
+from tme.services.vault import _master_key, store_bot_token, token_hash
 
 logger = get_logger(__name__)
 
@@ -74,6 +75,15 @@ async def _upsert_owner(
     return user
 
 
+def _vault_status() -> bool:
+    """True if the vault is configured (master key present)."""
+    try:
+        _master_key()
+    except ValueError:
+        return False
+    return True
+
+
 async def provision_managed_bot(
     *,
     token: str,
@@ -114,9 +124,16 @@ async def provision_managed_bot(
 
         existing = await session.execute(select(BotModel).where(BotModel.token == token))
         bot_row = existing.scalar_one_or_none()
+        vault_on = _vault_status()
+        if not vault_on:
+            logger.warning(
+                "VAULT_MASTER_KEY not set — provisioning without vaulting the "
+                "token (plaintext column remains the source of truth)"
+            )
         if bot_row is None:
             bot_row = BotModel(
                 token=token,
+                token_hash=token_hash(token),
                 telegram_bot_id=telegram_bot_id,
                 username=username,
                 title=title,
@@ -126,8 +143,14 @@ async def provision_managed_bot(
             )
             bot_row.config = BotConfig(flow=default_config.model_dump())
             session.add(bot_row)
+            await session.flush()  # assign bot_row.id for the vault FK
+            if vault_on:
+                await store_bot_token(session, bot_id=bot_row.id, token=token)
         else:
             bot_row.username, bot_row.title, bot_row.is_active = username, title, True
+            bot_row.token_hash = token_hash(token)
+            if vault_on:
+                await store_bot_token(session, bot_id=bot_row.id, token=token)
         await session.flush()
 
     # Prime the cache with EXACTLY what was persisted. A fresh per-type default

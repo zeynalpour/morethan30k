@@ -20,6 +20,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "orjson>=3.10",
+    "cryptography>=50.0.1",
 ]
 
 [project.optional-dependencies]

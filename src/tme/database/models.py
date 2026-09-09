@@ -15,7 +15,17 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -110,7 +120,14 @@ class Bot(Base):
     __tablename__ = "bots"
 
     #: The tenant bot's Bot API token — unique routing identifier.
+    #: TRANSITIONAL (S0.3): superseded by ``token_hash`` + the secret vault;
+    #: kept populated until the data migration moves every token into the
+    #: vault, then dropped in a follow-up migration.
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    #: Peppered HMAC-SHA256 of the token — the lookup key on the webhook
+    #: hot path once S0.3 is fully rolled out. Computing it needs no
+    #: decryption and leaks nothing about the token.
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     #: The bot's own Telegram user id (the numeric prefix of the token).
     telegram_bot_id: Mapped[int] = mapped_column(
         BigInteger, unique=True, index=True, nullable=False
@@ -194,3 +211,34 @@ class BotConfig(Base):
 
     def __repr__(self) -> str:
         return f"<BotConfig id={self.id} bot_id={self.bot_id}>"
+
+
+class Secret(Base):
+    """A vault-protected secret (bot token, API key) — S0.3.
+
+    Envelope encryption: ``ciphertext`` is the payload encrypted with a
+    per-row random DEK; ``wrapped_dek`` is that DEK encrypted with the
+    server master key (``VAULT_MASTER_KEY``). See
+    :mod:`tme.services.vault` for the crypto and the routing-hash design.
+    """
+
+    __tablename__ = "secrets"
+    __table_args__ = (UniqueConstraint("kind", "ref_id", name="uq_secrets_kind_ref"),)
+
+    #: What kind of secret this is.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    #: What it belongs to (bot id, owner id, …) — unique per kind.
+    ref_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: AES-GCM ciphertext of the secret (nonce prefixed).
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: The per-row DEK, wrapped by the master key (nonce prefixed).
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: Last four chars for safe display ("…ab12").
+    last_four: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: When this secret was written/rotated.
+    rotated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<Secret kind={self.kind} ref={self.ref_id} …{self.last_four}>"
