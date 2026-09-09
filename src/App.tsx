@@ -71,7 +71,7 @@ export default function App() {
       "";
     if (!initData) {
       setErrorMsg(
-        "This dashboard opens only as a Mini App inside Telegram — tap “🚀 Open Dashboard” in the Main Bot. If it still fails, register the bot's Web App domain in @BotFather: /setdomain → tme-dev.izhex.com."
+        `This dashboard opens only as a Mini App inside Telegram — tap “🚀 Open Dashboard” in the Main Bot. If it still fails, fully restart the Telegram app. (URL received: "${window.location.search}")`
       );
       setView("error");
       return;
