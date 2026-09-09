@@ -36,11 +36,12 @@ as work progresses; PRs should reference the phase they belong to.
 - 🟢 **`BotType` enum + per-type config union** — one `Bot` table holding typed
   configs: `generic | hello | echo | bridge | ai_gateway | …`. (S0.2 — the
   controller bot's create flow now offers Generic/Hello/Echo.)
-- 🟡 **Per-user bot-settings dashboard (BotFather-style mini app)** — every
+- 🟢 **Per-user bot-settings dashboard (BotFather-style mini app)** — every
   owner manages their own bots from a settings UI: owner-only API
-  (`/api/bots*`), dashboard link issued by the Main Bot, settings editor.
-  (S0.4 — MVP in progress; builds on the merged bolt-new React frontend.
-  Extended vision: Phase 8.)
+  (`/api/bots*`), dashboard as a Telegram Mini App (initData auth, no bearer
+  tokens), settings editor (welcome/fallback/menu buttons/active modules),
+  enable-disable toggle, bot-type switch. (S0.4 — done; builds on the merged
+  bolt-new React frontend. Extended vision: Phase 8.)
   *Architecture decision (resolved, S0.4):* management plane is the FastAPI
   CRUD API — single source of truth + Redis-cache invalidation. Direct
   Supabase writes were rejected: they cannot invalidate the Redis config
