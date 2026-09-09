@@ -19,6 +19,7 @@ from aiogram import F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ManagedBotUpdated, User
 
+from tme.config import settings
 from tme.database.models import BotType
 from tme.routers import main_bot as main_router_module
 from tme.routers.main_bot import (
@@ -186,7 +187,7 @@ def test_dashboard_command_sends_mini_app_button() -> None:
     button = kb.inline_keyboard[0][0]
     assert button.text == "🚀 Open Dashboard"
     assert button.web_app is not None
-    assert button.web_app.url == "https://test.example.com/dashboard/"
+    assert button.web_app.url == f"{settings.webhook_base_url}/dashboard/"
 
 
 def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
@@ -205,8 +206,8 @@ def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
     labels = [b.text for row in kb.inline_keyboard for b in row]
     urls = [b.web_app.url for row in kb.inline_keyboard for b in row]
     assert urls == [
-        "https://test.example.com/dashboard/?bid=1",
-        "https://test.example.com/dashboard/?bid=2",
+        f"{settings.webhook_base_url}/dashboard/?bid=1",
+        f"{settings.webhook_base_url}/dashboard/?bid=2",
     ]
     assert labels[0] == "⚙️ @alpha"
     assert labels[1] == "⚙️ Bot #2"  # nameless bot falls back to its id
