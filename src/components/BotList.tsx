@@ -53,11 +53,22 @@ export function BotList({ bots, currentBotId, onSelect }: BotListProps) {
                 {icon}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{displayName}</div>
+                <div className="font-medium truncate">
+                  {displayName}
+                  {!bot.is_active && (
+                    <span
+                      className="text-[10px] ml-2 px-1.5 py-0.5 rounded-full uppercase tracking-wide"
+                      style={{ background: "rgba(255,152,0,0.18)", color: "#ff9800" }}
+                    >
+                      Paused
+                    </span>
+                  )}
+                </div>
                 <div
                   className="text-xs mt-0.5"
                   style={{
                     color: isCurrent ? "rgba(255,255,255,0.7)" : "var(--tg-hint)",
+                    opacity: bot.is_active ? 1 : 0.7,
                   }}
                 >
                   {bot.username ? `@${bot.username}` : `ID: ${bot.id}`}

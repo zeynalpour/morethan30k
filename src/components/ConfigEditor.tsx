@@ -6,15 +6,19 @@ interface ConfigEditorProps {
   config: BotConfigRow;
   bot: BotRow;
   onSave: (flow: BotConfigFlow) => void;
+  onTypeChange: (botType: string) => void;
   onShowBots: () => void;
 }
 
-export function ConfigEditor({ config, bot, onSave, onShowBots }: ConfigEditorProps) {
+export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: ConfigEditorProps) {
   const flow = config.flow as BotConfigFlow;
   const [welcomeMessage, setWelcomeMessage] = useState(flow.welcome_message || "");
   const [fallbackMessage, setFallbackMessage] = useState(flow.fallback_message || "");
   const [greeting, setGreeting] = useState(flow.greeting || "");
   const [echoPrefix, setEchoPrefix] = useState(flow.echo_prefix || "");
+  const [activeModules, setActiveModules] = useState(
+    Array.isArray(flow.active_modules) ? flow.active_modules.join(", ") : ""
+  );
   const [menuButtons, setMenuButtons] = useState<MenuButtonData[]>(
     Array.isArray(flow.menu_buttons) ? flow.menu_buttons : []
   );
@@ -32,15 +36,35 @@ export function ConfigEditor({ config, bot, onSave, onShowBots }: ConfigEditorPr
       welcome_message: welcomeMessage,
       fallback_message: fallbackMessage,
       menu_buttons: menuButtons,
+      active_modules: activeModules
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
     };
     if (isHello) newFlow.greeting = greeting;
     if (isEcho) newFlow.echo_prefix = echoPrefix;
     onSave(newFlow);
     setSaving(false);
-  }, [flow, welcomeMessage, fallbackMessage, menuButtons, greeting, echoPrefix, isHello, isEcho, onSave]);
+  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, greeting, echoPrefix, isHello, isEcho, onSave]);
 
   return (
     <div className="px-4 py-4 space-y-5">
+      <Section
+        title="Bot Type"
+        subtitle="Switching type resets this bot's configuration to that type's defaults"
+      >
+        <select
+          value={bot.bot_type}
+          onChange={(e) => {
+            if (e.target.value !== bot.bot_type) onTypeChange(e.target.value);
+          }}
+        >
+          <option value="generic">Generic</option>
+          <option value="hello">Hello Bot</option>
+          <option value="echo">Echo Bot</option>
+        </select>
+      </Section>
+
       <Section title="Welcome Message" subtitle="Sent when a user starts the bot with /start">
         <textarea
           value={welcomeMessage}
@@ -76,6 +100,15 @@ export function ConfigEditor({ config, bot, onSave, onShowBots }: ConfigEditorPr
         <MenuButtonsEditor buttons={menuButtons} onChange={setMenuButtons} />
       </Section>
 
+      <Section title="Active Modules" subtitle="Comma-separated feature flags enabled for this bot">
+        <input
+          type="text"
+          value={activeModules}
+          onChange={(e) => setActiveModules(e.target.value)}
+          placeholder="module-a, module-b"
+        />
+      </Section>
+
       <Section title="Fallback Message" subtitle="Reply when the bot doesn't understand a message">
         <textarea
           value={fallbackMessage}
@@ -84,6 +117,16 @@ export function ConfigEditor({ config, bot, onSave, onShowBots }: ConfigEditorPr
           rows={2}
         />
       </Section>
+
+      {!bot.is_active && (
+        <div
+          className="text-xs px-3 py-2 rounded-lg"
+          style={{ background: "rgba(255,152,0,0.12)", color: "#ff9800" }}
+        >
+          ⏸ This bot is disabled — users' messages are not answered. Enable it in the header to
+          resume.
+        </div>
+      )}
 
       <div className="pt-2">
         <button className="btn-primary" onClick={handleSave} disabled={saving}>

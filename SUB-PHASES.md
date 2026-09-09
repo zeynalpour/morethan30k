@@ -96,14 +96,21 @@ cache invalidation; Supabase drops out of the data path.
 - [x] `dashboard_auth_tokens` table (migration 0003) + issue/validate service.
 - [x] Owner-only access: auth binds to `users.telegram_id`; users list and
       edit only their own bots.
-- [x] Settings editor: bot type, welcome message, menu buttons, fallback text
-      → write `bot_configs.flow`, invalidate the cache.
-- [x] Repoint the bolt-new frontend from Supabase to the API (served at
-      `/dashboard`, `web-dist` shipped in the image).
-- [ ] Bot status view: active/webhook state is shown; the enable/disable
-      toggle is not wired yet.
-- [ ] Isolation + cache-invalidation integration tests (unit tests cover the
-      API; a full-stack test is not in place yet).
+- [x] Settings editor: bot type, welcome message, menu buttons, fallback text,
+      active modules → write `bot_configs.flow`, invalidate the cache.
+- [x] Mini App delivery + auth: WebApp buttons, initData (hash-delivered,
+      HMAC-validated per request), dashboard served at `/dashboard` AND the
+      domain root (profile Mini App / menu button), `/dashboard` command +
+      auto-registered menu.
+- [x] Bot status view: webhook state + created date shown; enable/disable
+      toggle (`PATCH /api/bots/{id}`) — disabling is a hard stop at the
+      runtime layer (cache dropped, only ACTIVE bots resolve).
+- [x] Bot type switching in the dashboard (`PATCH /api/bots/{id}` with
+      `bot_type`) — resets flow to that type's defaults.
+- [x] Full-stack integration tests (`tests/test_integration.py`): real
+      Postgres (`tme_test` DB, Alembic-migrated) + Redis db 15 — provision →
+      signed-initData API → config patch through cache → disable/enable →
+      type switch. Skipped when the host infra stack is down.
 
 **Acceptance criteria**
 

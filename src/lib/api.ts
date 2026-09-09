@@ -76,6 +76,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ flow }),
     }),
+  // Management knobs: enable/disable, switch bot type (resets config to
+  // that type's defaults on the backend).
+  updateBot: (botId: number, patch: { is_active?: boolean; bot_type?: string }) =>
+    request<BotRow>(`/api/bots/${botId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 };
 
 export function wrapConfig(bot: BotRow, flow: BotConfigFlow): BotConfigRow {

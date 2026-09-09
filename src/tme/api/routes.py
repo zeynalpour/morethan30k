@@ -19,9 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tme.core.cache import invalidate_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
-from tme.database.models import Bot as BotModel, User
+from tme.database.models import Bot as BotModel, BotType, User
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.auth import validate_telegram_init_data
+from tme.services.managed_bots import _default_config_for
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,13 @@ class ConfigUpdate(BaseModel):
     """Body of ``PATCH /api/bots/{id}/config`` — the full flow dict."""
 
     flow: dict
+
+
+class BotUpdate(BaseModel):
+    """Body of ``PATCH /api/bots/{id}`` — management-plane knobs."""
+
+    is_active: bool | None = None
+    bot_type: BotType | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -160,3 +168,46 @@ async def update_bot_config(
     await invalidate_bot_config(token)
     logger.info("Updated config for bot id=%s (owner tg=%s)", bot_id, auth)
     return bot.config.flow
+
+
+@router.patch("/bots/{bot_id}", response_model=BotSummary)
+async def update_bot(
+    bot_id: int,
+    payload: BotUpdate,
+    auth: int = Depends(_require_auth),
+) -> BotSummary:
+    """Toggle a bot on/off or switch its type (resets flow to that type's default).
+
+    Disabling is a hard stop: the runtime only resolves ACTIVE bots
+    (:func:`tme.core.cache.get_bot_config`), so the cache is dropped to make
+    the change immediate instead of waiting for the TTL. Re-enabling reloads
+    from Postgres. Switching ``bot_type`` re-applies the new type's default
+    config — the same reset provisioning does.
+    """
+    if payload.is_active is None and payload.bot_type is None:
+        raise HTTPException(status_code=422, detail="Nothing to update")
+
+    async with session_scope() as session:
+        bot = await _load_owned_bot(session, bot_id, auth)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        if payload.bot_type is not None and payload.bot_type != bot.bot_type:
+            bot.bot_type = payload.bot_type
+            if bot.config is not None:
+                bot.config.flow = _default_config_for(payload.bot_type).model_dump()
+        if payload.is_active is not None:
+            bot.is_active = payload.is_active
+
+        summary = _summarize(bot)
+        token = bot.token  # captured before the session closes
+
+    await invalidate_bot_config(token)
+    logger.info(
+        "Updated bot id=%s (owner tg=%s): active=%s type=%s",
+        bot_id,
+        auth,
+        summary.is_active,
+        summary.bot_type,
+    )
+    return summary

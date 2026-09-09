@@ -47,6 +47,7 @@ export default function App() {
   const [config, setConfig] = useState<BotConfigRow | null>(null);
   const [bots, setBots] = useState<BotRow[]>([]);
   const [isHome, setIsHome] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
   const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
@@ -155,6 +156,44 @@ export default function App() {
     [config, bot, showToast, haptic]
   );
 
+  const handleToggleActive = useCallback(async () => {
+    if (!bot) return;
+    haptic("medium");
+    setToggling(true);
+    try {
+      const updated = await api.updateBot(bot.id, { is_active: !bot.is_active });
+      setBot(updated);
+      showToast(
+        updated.is_active ? "Bot enabled — it answers again" : "Bot disabled — messages ignored"
+      );
+      haptic("light");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to update bot", "error");
+      haptic("heavy");
+    } finally {
+      setToggling(false);
+    }
+  }, [bot, showToast, haptic]);
+
+  const handleTypeChange = useCallback(
+    async (newType: string) => {
+      if (!bot || newType === bot.bot_type) return;
+      haptic("medium");
+      try {
+        const updated = await api.updateBot(bot.id, { bot_type: newType });
+        const flow = await api.getConfig(bot.id);
+        setBot(updated);
+        setConfig(wrapConfig(updated, flow));
+        showToast(`Switched to ${newType} — config reset to defaults`);
+        haptic("light");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Failed to switch bot type", "error");
+        haptic("heavy");
+      }
+    },
+    [bot, showToast, haptic]
+  );
+
   const handleSwitchBot = useCallback((newBot: BotRow) => {
     setBot(newBot);
     setView("loading");
@@ -211,11 +250,12 @@ export default function App() {
 
       {view === "dashboard" && bot && config && (
         <>
-          <BotHeader bot={bot} />
+          <BotHeader bot={bot} onToggleActive={handleToggleActive} toggling={toggling} />
           <ConfigEditor
             config={config}
             bot={bot}
             onSave={handleSaveConfig}
+            onTypeChange={handleTypeChange}
             onShowBots={() => {
               haptic("light");
               loadBots();

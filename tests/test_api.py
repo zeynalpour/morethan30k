@@ -181,3 +181,65 @@ def test_patch_config_not_owned_404(monkeypatch) -> None:
     )
     assert resp.status_code == 404
     invalidate.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# Management knobs (PATCH /api/bots/{id})
+# --------------------------------------------------------------------------- #
+def test_toggle_active_disables_bot(monkeypatch) -> None:
+    bot = _bot()
+    invalidate = _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch("/api/bots/7", json={"is_active": False}, headers=_AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+    assert bot.is_active is False
+    invalidate.assert_awaited_once()
+
+
+def test_toggle_active_reenables_bot(monkeypatch) -> None:
+    bot = _bot()
+    _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch("/api/bots/7", json={"is_active": True}, headers=_AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+    assert bot.is_active is True
+
+
+def test_switch_type_resets_flow_to_default(monkeypatch) -> None:
+    bot = _bot()
+    _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch("/api/bots/7", json={"bot_type": "echo"}, headers=_AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["bot_type"] == "echo"
+    assert bot.bot_type is BotType.ECHO
+    assert bot.config.flow["bot_type"] == "echo"  # flow reset to echo default
+
+
+def test_update_bot_rejects_unknown_type(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=_bot())
+
+    resp = client.patch("/api/bots/7", json={"bot_type": "warp"}, headers=_AUTH)
+
+    assert resp.status_code == 422
+
+
+def test_update_bot_empty_payload_422(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=_bot())
+
+    resp = client.patch("/api/bots/7", json={}, headers=_AUTH)
+
+    assert resp.status_code == 422
+
+
+def test_update_bot_not_owned_404(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=None)
+
+    resp = client.patch("/api/bots/999", json={"is_active": False}, headers=_AUTH)
+
+    assert resp.status_code == 404
