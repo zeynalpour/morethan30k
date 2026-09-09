@@ -185,12 +185,30 @@ cache invalidation; Supabase drops out of the data path.
   translation; a user can force any of the 12 picker languages per-account.
 - A single-language bot never localizes, regardless of user preference.
 
-### S1.3 — Main bot (control plane) i18n *(planned)*
+### S1.3 — Controller-bot i18n *(done)*
+
+The controller bot's own copy speaks the owner's language — same chain as
+tenant bots (stored `/language` preference → Telegram UI `language_code` →
+English). Built-in table (`src/tme/core/main_i18n.py`): add a language by
+extending `MAIN_BOT_STRINGS`; the controller's `/language` picker offers
+exactly the shipped languages (+ Auto reset) and writes the SAME store
+tenant bots read — one pick localizes the whole platform for that owner.
 
 **Checklist**
 
-- [ ] Controller-bot copy in the owner's language; GOD works the platform in
-      GOD's language. 💡
+- [x] Built-in `en` + `fa` copy tables; `tr()` falls back to English;
+      key drift between languages is a test failure.
+- [x] `I18nMiddleware` on `main_dp`; the `ManagedBotUpdated` handler
+      resolves the owner's language explicitly (middleware can't see inside
+      that wrapper).
+- [x] Every controller message localized: /start welcome, creation intro,
+      token-fetch failure, type picker + captions, provision failure,
+      live-confirmation, /mybots list + empty state, /dashboard intro,
+      Mini App button labels, reply-keyboard labels.
+- [x] Localized reply-keyboard "🤖 ربات‌های من" accepted by the `/mybots`
+      filter (en + emoji + fa variants).
+- [x] `/language` on the controller with picker of shipped languages + Auto.
+- [x] `setMyCommands` registers per-language menus (`language_code` scope).
 
 ---
 
@@ -207,6 +225,7 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S1.1 + S1.2 are done** (per-bot translations, per-user `/language`
-preference, `I18nMiddleware`, single-language mode) — S0.1–S0.4 complete.
-Next: S1.3 (main-bot / control-plane i18n).
+**→ S1.1 + S1.2 + S1.3 are done** (per-bot translations, per-user `/language`
+preference, single-language mode, controller copy in the owner's language)
+— S0.1–S0.4 complete. **Phase 1 is done.** Next: Phase 2 (template gallery
+etc. — see ROADMAP).

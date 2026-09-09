@@ -23,8 +23,14 @@ from tme.routers.main_bot import main_router
 
 
 def build_main_dispatcher() -> Dispatcher:
-    """Dispatcher for the controller bot."""
+    """Dispatcher for the controller bot.
+
+    The I18nMiddleware injects ``language_code`` (stored preference →
+    Telegram UI language) so the controller's copy speaks the owner's
+    language; no ``bot_config`` here, so the middleware never skips.
+    """
     dp = Dispatcher(storage=storage)
+    dp.update.outer_middleware(I18nMiddleware())
     dp.include_router(main_router)
     return dp
 

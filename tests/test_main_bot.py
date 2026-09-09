@@ -60,6 +60,8 @@ def test_managed_bot_handler_asks_for_type(monkeypatch) -> None:
     fake_bot = AsyncMock(return_value="123456789:FAKE_TOKEN")
     provision = AsyncMock()
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    # No stored preference, no Telegram language → English copy.
+    monkeypatch.setattr("tme.routers.main_bot.get_user_language", AsyncMock(return_value=None))
 
     asyncio.run(on_managed_bot(event, fake_bot))
 
@@ -225,9 +227,10 @@ def test_my_bots_empty_state(monkeypatch) -> None:
 
 def test_my_bots_button_filter_matches_emoji_variant() -> None:
     """The reply-keyboard button sends '🤖 My Bots'; the filter must accept it."""
-    filt = F.text.in_(["My Bots", "🤖 My Bots"])
+    filt = F.text.in_(["My Bots", "🤖 My Bots", "🤖 ربات‌های من"])
     assert filt.resolve(SimpleNamespace(text="My Bots")) is True
     assert filt.resolve(SimpleNamespace(text="🤖 My Bots")) is True
+    assert filt.resolve(SimpleNamespace(text="🤖 ربات‌های من")) is True
     assert filt.resolve(SimpleNamespace(text="Something else")) is False
 
 
@@ -235,9 +238,17 @@ def test_register_main_commands_sends_command_menu() -> None:
     """Startup pushes /mybots into the bot's command menu automatically."""
     fake_bot = AsyncMock()
     asyncio.run(register_main_commands(fake_bot))
-    fake_bot.set_my_commands.assert_awaited_once()
-    commands = fake_bot.set_my_commands.await_args.args[0]
-    assert [c.command for c in commands] == ["start", "mybots", "dashboard"]
+    assert fake_bot.set_my_commands.await_count == 2  # en default + fa scope
+    calls = fake_bot.set_my_commands.await_args_list
+    commands = calls[0].args[0]
+    assert [c.command for c in commands] == ["start", "mybots", "dashboard", "language"]
+    # The fa scope carries localized descriptions with the same commands.
+    fa_call = [c for c in calls if c.kwargs.get("language_code") == "fa"]
+    assert len(fa_call) == 1
+    fa_commands = fa_call[0].args[0]
+    assert [c.command for c in fa_commands] == ["start", "mybots", "dashboard", "language"]
+    assert fa_commands[0].description == "شروع"
+    assert commands[0].description == "Start"
 
 
 def test_register_main_commands_tolerates_api_error() -> None:

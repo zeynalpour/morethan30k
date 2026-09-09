@@ -63,8 +63,8 @@ as work progresses; PRs should reference the phase they belong to.
   Redis-cached service; the picker overrides the Telegram default per account.)
 - 🟢 `I18nMiddleware` on the tenant router so every handler reads the user's
   language. The **main bot (control plane) translates too** — so GOD works the
-  platform in GOD's language. 💡 (middleware done in S1.2; main-bot copy is
-  S1.3)
+  platform in GOD's language. ✅ (S1.2 middleware; S1.3 main-bot copy: built-in
+  en + fa tables, `/language` on the controller, per-language command menus)
 - 🟢 Owner-enforced **single-language mode** — a bot with `single_language`
   checked speaks only its base copy. ✅ (S1.2 dashboard toggle)
 - 🟢 "Copy-from-base" editor helper — seed a new language from an existing one
