@@ -154,6 +154,12 @@ after it:
 - 🧭 **Template gallery integration** — pick a template on create (Phase 2).
 - 🧭 **Per-bot analytics in the dashboard** — active users, messages (feeds
   the Phase 7 dashboard).
+- 🧭 **Tabbed BotFather-style dashboard** — as every bot gains more settings
+  (commands, translations, inline mode, tools, MCPs, AI gateway, credits…),
+  the single-scroll editor becomes tabs, one per settings family, with a
+  global "Bot status" tab (identity, toggle, webhook). Mirror BotFather's
+  mini-app UX. 💡 (S0.4/S1.x ship the flat MVP; the tab shell lands when the
+  third settings family lands.)
 
 ---
 

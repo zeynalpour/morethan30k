@@ -193,6 +193,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
           the base copy)
         </label>
 
+        {singleLanguage ? (
+          <p className="text-xs" style={{ color: "var(--tg-hint)" }}>
+            🔒 Translations are saved but ignored while single-language mode is
+            on. Users get the base copy and cannot switch languages.
+          </p>
+        ) : (
+          <>
         <div className="flex flex-wrap gap-1.5 items-center">
           {Object.keys(translations).map((lang) => (
             <button
@@ -304,6 +311,8 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
               📋 Copy from base
             </button>
           </div>
+        )}
+          </>
         )}
       </Section>
 

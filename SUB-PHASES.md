@@ -165,14 +165,16 @@ cache invalidation; Supabase drops out of the data path.
       Telegram id, covering both owners and tenant-bot users.
 - [x] `services/user_language.py`: get/set with Redis read-through cache.
 - [x] `/language` (+ `/lang`) command on tenant bots with an inline flag
-      picker (en, fa, de, ru, ar, es, fr, tr, zh, hi, id, pt); the choice
-      overrides the Telegram default for every bot the user chats with.
+      picker that lists ONLY the bot's actual translation languages (+
+      "Auto (Telegram)" to clear the choice); refused entirely on
+      single-language bots (command and callback both guarded).
 - [x] `I18nMiddleware` on the tenant dispatcher: resolves stored preference →
       Telegram `language_code` and injects `language_code` into handlers;
       skips the lookup for single-language bots.
 - [x] Owner toggle **single-language mode** (`single_language` in the flow):
       the bot speaks ONLY its base copy — translations and user language are
-      ignored. Dashboard checkbox.
+      ignored; the dashboard hides the translation editor while it's on and
+      the picker refuses to switch.
 - [x] Tests: `effective_language` ordering, single-language bypass, picker
       handlers, middleware (preference wins / telegram fallback / skip), and a
       real-DB+Redis round-trip in the integration suite. 91 total green.

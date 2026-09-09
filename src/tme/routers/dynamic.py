@@ -30,7 +30,7 @@ from aiogram.types import (
 from tme.core.i18n import localize
 from tme.core.logging import get_logger
 from tme.schemas.bot_config import BotConfigUnion, EchoBotConfig, HelloBotConfig, MenuButton
-from tme.services.user_language import set_user_language
+from tme.services.user_language import clear_user_language, set_user_language
 
 logger = get_logger(__name__)
 
@@ -70,15 +70,24 @@ def _build_menu(menu_buttons: list[MenuButton]) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _language_keyboard() -> InlineKeyboardMarkup:
-    """Inline flag picker for the /language command (two per row)."""
+def _language_keyboard(config: BotConfigUnion) -> InlineKeyboardMarkup:
+    """Flag picker for exactly the languages this bot has translations for.
+
+    Unknown codes render as a globe + code; a trailing "Auto (Telegram)"
+    button clears the user's explicit choice. A bot with no translations
+    offers only Auto.
+    """
+    codes = [code for code in config.translations if code]
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(_LANGUAGE_FLAGS), 2):
-        row = [
-            InlineKeyboardButton(text=flag, callback_data=f"{_LANG_PREFIX}{code}")
-            for code, flag in _LANGUAGE_FLAGS[i : i + 2]
-        ]
+    for i in range(0, len(codes), 2):
+        row = []
+        for code in codes[i : i + 2]:
+            flag = next((f for c, f in _LANGUAGE_FLAGS if c == code), f"🌐 {code}")
+            row.append(InlineKeyboardButton(text=flag, callback_data=f"{_LANG_PREFIX}{code}"))
         rows.append(row)
+    rows.append(
+        [InlineKeyboardButton(text="🔄 Auto (Telegram)", callback_data=f"{_LANG_PREFIX}auto")]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -92,18 +101,39 @@ async def on_start(message: Message, bot_config: BotConfigUnion, language_code: 
 
 
 @dynamic_router.message(Command("language", "lang"))
-async def on_language_command(message: Message) -> None:
-    """Show the inline flag picker to override the user's Telegram language."""
-    await message.answer("🌐 Choose your language:", reply_markup=_language_keyboard())
+async def on_language_command(message: Message, bot_config: BotConfigUnion) -> None:
+    """Show the inline flag picker (only languages this bot actually speaks).
+
+    Single-language bots refuse to switch — the owner locked the copy.
+    """
+    if bot_config.single_language:
+        await message.answer("🔒 This bot is single-language — it speaks only its base language.")
+        return
+    await message.answer(
+        "🌐 Choose your language:",
+        reply_markup=_language_keyboard(bot_config),
+    )
 
 
 @dynamic_router.callback_query(F.data.startswith(_LANG_PREFIX))
-async def on_language_pick(callback: CallbackQuery) -> None:
-    """Persist the user's explicit language choice for every bot they use."""
+async def on_language_pick(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
+    """Persist (or clear) the user's explicit language choice."""
     if callback.from_user is None:
         await callback.answer("Something went wrong — please try again.")
         return
+    if bot_config.single_language:
+        await callback.answer("🔒 This bot is single-language.")
+        return
+
     code = (callback.data or _LANG_PREFIX).removeprefix(_LANG_PREFIX)
+    if code == "auto":
+        await clear_user_language(callback.from_user.id)
+        await callback.answer("Following your Telegram language ✅")
+        if isinstance(callback.message, Message):
+            with suppress(TelegramBadRequest):
+                await callback.message.edit_text("🌐 Language: Auto (Telegram)")
+        return
+
     await set_user_language(callback.from_user.id, code)
     flag = next((f for c, f in _LANGUAGE_FLAGS if c == code), code)
     await callback.answer(f"Language set to {code} ✅")

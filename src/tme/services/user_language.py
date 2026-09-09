@@ -60,3 +60,17 @@ async def set_user_language(telegram_id: int, language_code: str) -> None:
 
     await redis_client.set(_cache_key(telegram_id), language_code.encode(), ex=_CACHE_TTL)
     logger.debug("Set language %s for tg=%s", language_code, telegram_id)
+
+
+async def clear_user_language(telegram_id: int) -> None:
+    """Drop an explicit preference — the user follows Telegram's UI language again."""
+    async with session_scope() as session:
+        row = await session.execute(
+            select(UserLanguage).where(UserLanguage.telegram_id == telegram_id)
+        )
+        user_lang = row.scalar_one_or_none()
+        if user_lang is not None:
+            await session.delete(user_lang)
+
+    await redis_client.delete(_cache_key(telegram_id))
+    logger.debug("Cleared language preference for tg=%s", telegram_id)
