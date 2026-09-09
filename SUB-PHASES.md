@@ -93,14 +93,17 @@ cache invalidation; Supabase drops out of the data path.
 
 **Checklist**
 
-- [ ] `dashboard_auth_tokens` table (migration 0003) + issue/validate service.
-- [ ] Owner-only access: auth binds to `users.telegram_id`; users list and
+- [x] `dashboard_auth_tokens` table (migration 0003) + issue/validate service.
+- [x] Owner-only access: auth binds to `users.telegram_id`; users list and
       edit only their own bots.
-- [ ] Settings editor: bot type, welcome message, menu buttons, fallback text
+- [x] Settings editor: bot type, welcome message, menu buttons, fallback text
       → write `bot_configs.flow`, invalidate the cache.
-- [ ] Bot status view: webhook state, active toggle, username/title.
-- [ ] Repoint the bolt-new frontend from Supabase to the API.
-- [ ] Isolation + cache-invalidation integration tests.
+- [x] Repoint the bolt-new frontend from Supabase to the API (served at
+      `/dashboard`, `web-dist` shipped in the image).
+- [ ] Bot status view: active/webhook state is shown; the enable/disable
+      toggle is not wired yet.
+- [ ] Isolation + cache-invalidation integration tests (unit tests cover the
+      API; a full-stack test is not in place yet).
 
 **Acceptance criteria**
 
