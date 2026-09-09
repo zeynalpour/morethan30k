@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from aiogram.types import Chat, Message, User
+from aiogram.types import Chat, Message, Update, User
 
 from tme.middlewares.i18n_middleware import I18nMiddleware
 
@@ -54,3 +54,20 @@ def test_middleware_skips_lookup_for_single_language_bots(monkeypatch) -> None:
     )
     assert data["language_code"] is None
     get_lang.assert_not_awaited()
+
+
+def test_middleware_reads_user_from_update_wrapper(monkeypatch) -> None:
+    """The real feed path hands the UPDATE observer the Update wrapper, not a
+    Message — regression: language was always None until this was handled."""
+    update = Update(update_id=1, message=_message(7, "en-US"))
+    get_lang = AsyncMock(return_value="fa")
+    monkeypatch.setattr("tme.middlewares.i18n_middleware.get_user_language", get_lang)
+    data: dict = {"bot_config": SimpleNamespace(single_language=False)}
+
+    async def handler(_event, _data) -> None:
+        return None
+
+    asyncio.run(I18nMiddleware()(handler, update, data))
+
+    assert data["language_code"] == "fa"
+    get_lang.assert_awaited_once_with(7)
