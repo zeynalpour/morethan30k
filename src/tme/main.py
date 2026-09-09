@@ -130,12 +130,6 @@ _WEB_DIST = FilePath(__file__).resolve().parents[2] / "web-dist"
 if _WEB_DIST.is_dir():
     app.mount("/dashboard", StaticFiles(directory=_WEB_DIST, html=True), name="dashboard")
 
-    # The BotFather-registered web app URL is the bare domain, so the bot's
-    # profile Mini App / menu button launch "https://<domain>/". Serve the
-    # dashboard at the root too. Registered LAST so it never shadows /api,
-    # /webhook, or /health; unknown paths fall through to StaticFiles' 404.
-    app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="dashboard_root")
-
 
 def _verify_secret(header_value: str | None) -> bool:
     """Constant-time check of Telegram's secret-token header."""
@@ -180,6 +174,14 @@ async def telegram_webhook(
         logger.exception("Error processing update for …%s", bot_token[-6:])
 
     return JSONResponse({"ok": True})
+
+
+if _WEB_DIST.is_dir():
+    # BotFather registers the bare domain, so the bot's profile Mini App and
+    # menu button launch "https://<domain>/". Serve the dashboard at the root
+    # too — mounted HERE, after /health and /webhook, so it never shadows
+    # them; unknown paths fall through to StaticFiles' own 404.
+    app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="dashboard_root")
 
 
 def run() -> None:
