@@ -20,10 +20,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 import hmac
+from pathlib import Path as FilePath
 
 from aiogram.types import Update
 from fastapi import FastAPI, Header, Path, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from tme.api.routes import router as api_router
 from tme.config import settings
@@ -120,6 +122,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(api_router)
+
+# Serve the built settings dashboard (web-dist) at /dashboard — the link the
+# Main Bot sends. Guarded so a source checkout without a frontend build still
+# boots; the Docker image always ships web-dist.
+_WEB_DIST = FilePath(__file__).resolve().parents[2] / "web-dist"
+if _WEB_DIST.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=_WEB_DIST, html=True), name="dashboard")
 
 
 def _verify_secret(header_value: str | None) -> bool:

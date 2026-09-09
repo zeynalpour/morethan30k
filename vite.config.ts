@@ -9,5 +9,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Local dev: proxy API calls to the running backend (docker-compose dev).
+    proxy: {
+      "/api": "http://localhost:8082",
+    },
   },
 });

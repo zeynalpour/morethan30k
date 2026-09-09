@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import {
-  supabase,
-  type DashboardAuthToken,
+  api,
+  setAuthToken,
+  wrapConfig,
   type BotRow,
   type BotConfigRow,
   type BotConfigFlow,
-  type MenuButtonData,
-} from "./lib/supabase";
+} from "./lib/api";
 import { BotHeader } from "./components/BotHeader";
 import { ConfigEditor } from "./components/ConfigEditor";
 import { BotList } from "./components/BotList";
@@ -43,7 +43,6 @@ declare global {
 export default function App() {
   const [view, setView] = useState<View>("loading");
   const [errorMsg, setErrorMsg] = useState("");
-  const [authToken, setAuthToken] = useState<DashboardAuthToken | null>(null);
   const [bot, setBot] = useState<BotRow | null>(null);
   const [config, setConfig] = useState<BotConfigRow | null>(null);
   const [bots, setBots] = useState<BotRow[]>([]);
@@ -70,67 +69,21 @@ export default function App() {
     }
 
     const botId = parseInt(botIdParam, 10);
+    setAuthToken(token);
 
     (async () => {
       try {
-        const { data: tokenRows, error: tokenError } = await supabase
-          .from("dashboard_auth_tokens")
-          .select("*")
-          .eq("token", token)
-          .limit(1);
-
-        if (tokenError || !tokenRows || tokenRows.length === 0) {
-          setErrorMsg("Invalid or expired token. Please request a new dashboard link from the Main Bot.");
-          setView("error");
-          return;
-        }
-
-        const tokenRow = tokenRows[0] as DashboardAuthToken;
-
-        if (new Date(tokenRow.expires_at) < new Date()) {
-          setErrorMsg("This dashboard link has expired. Please request a new one from the Main Bot.");
-          setView("error");
-          return;
-        }
-
-        if (tokenRow.bot_id !== botId) {
-          setErrorMsg("Token does not match this bot.");
-          setView("error");
-          return;
-        }
-
-        setAuthToken(tokenRow);
-
-        const { data: botData, error: botError } = await supabase
-          .from("bots")
-          .select("*")
-          .eq("id", botId)
-          .maybeSingle();
-
-        if (botError || !botData) {
-          setErrorMsg("Bot not found.");
-          setView("error");
-          return;
-        }
-
-        setBot(botData as BotRow);
-
-        const { data: cfgData, error: cfgError } = await supabase
-          .from("bot_configs")
-          .select("*")
-          .eq("bot_id", botId)
-          .maybeSingle();
-
-        if (cfgError || !cfgData) {
-          setErrorMsg("Bot configuration not found.");
-          setView("error");
-          return;
-        }
-
-        setConfig(cfgData as BotConfigRow);
+        const botData = await api.getBot(botId);
+        const flow = await api.getConfig(botId);
+        setBot(botData);
+        setConfig(wrapConfig(botData, flow));
         setView("dashboard");
-      } catch {
-        setErrorMsg("Failed to load dashboard. Please try again.");
+      } catch (e) {
+        setErrorMsg(
+          e instanceof Error
+            ? e.message
+            : "Failed to load dashboard. Please request a new link from the Main Bot."
+        );
         setView("error");
       }
     })();
@@ -145,34 +98,27 @@ export default function App() {
   }, []);
 
   const loadBots = useCallback(async () => {
-    if (!authToken || !bot) return;
-    const { data, error } = await supabase
-      .from("bots")
-      .select("*")
-      .eq("owner_id", bot.owner_id)
-      .order("created_at", { ascending: false });
-    if (!error && data) {
-      setBots(data as BotRow[]);
+    try {
+      const data = await api.listBots();
+      setBots(data);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to load your bots", "error");
     }
-  }, [authToken, bot]);
+  }, [showToast]);
 
   const handleSaveConfig = useCallback(
     async (newFlow: BotConfigFlow) => {
       if (!config || !bot) return;
       haptic("medium");
 
-      const { error } = await supabase
-        .from("bot_configs")
-        .update({ flow: newFlow, updated_at: new Date().toISOString() })
-        .eq("bot_id", bot.id);
-
-      if (error) {
-        showToast("Failed to save configuration", "error");
-        haptic("heavy");
-      } else {
-        setConfig({ ...config, flow: newFlow as Record<string, unknown> });
+      try {
+        const saved = await api.saveConfig(bot.id, newFlow);
+        setConfig(wrapConfig(bot, saved));
         showToast("Configuration saved successfully!");
         haptic("light");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Failed to save configuration", "error");
+        haptic("heavy");
       }
     },
     [config, bot, showToast, haptic]
@@ -182,16 +128,14 @@ export default function App() {
     setBot(newBot);
     setView("loading");
     (async () => {
-      const { data, error } = await supabase
-        .from("bot_configs")
-        .select("*")
-        .eq("bot_id", newBot.id)
-        .maybeSingle();
-      if (!error && data) {
-        setConfig(data as BotConfigRow);
+      try {
+        const flow = await api.getConfig(newBot.id);
+        setConfig(wrapConfig(newBot, flow));
         setView("dashboard");
-      } else {
-        setErrorMsg("Failed to load bot configuration.");
+      } catch (e) {
+        setErrorMsg(
+          e instanceof Error ? e.message : "Failed to load bot configuration."
+        );
         setView("error");
       }
     })();

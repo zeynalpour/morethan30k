@@ -21,6 +21,8 @@ WORKDIR /app
 # Install dependencies first (cached layer) from the lockfile only.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+# Built settings dashboard (vite build output) — served by FastAPI at /dashboard.
+COPY web-dist ./web-dist
 # --frozen: fail if uv.lock is out of date. --no-dev: skip ruff/pytest/etc.
 RUN uv sync --frozen --no-dev
 

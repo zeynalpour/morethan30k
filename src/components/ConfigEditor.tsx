@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData } from "../lib/supabase";
+import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData } from "../lib/api";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
 
 interface ConfigEditorProps {

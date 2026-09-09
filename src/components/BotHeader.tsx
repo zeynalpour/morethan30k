@@ -1,4 +1,4 @@
-import type { BotRow } from "../lib/supabase";
+import type { BotRow } from "../lib/api";
 
 const BOT_TYPE_LABELS: Record<string, string> = {
   generic: "Generic",

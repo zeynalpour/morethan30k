@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { MenuButtonData } from "../lib/supabase";
+import type { MenuButtonData } from "../lib/api";
 
 interface MenuButtonsEditorProps {
   buttons: MenuButtonData[];
