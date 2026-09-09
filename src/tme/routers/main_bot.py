@@ -19,6 +19,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.methods import GetManagedBotToken
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -61,6 +62,24 @@ _PENDING: dict[int, str] = {}
 
 #: Callback-data prefix for the settings-dashboard button ("settings:{bot_id}").
 _SETTINGS_PREFIX = "settings:"
+
+
+def main_bot_commands() -> list[BotCommand]:
+    """Commands shown in the controller bot's menu (auto-registered at startup)."""
+    return [
+        BotCommand(command="start", description="Start"),
+        BotCommand(command="mybots", description="My bots & settings"),
+    ]
+
+
+async def register_main_commands(bot: Bot) -> None:
+    """Push the command menu via setMyCommands (no manual BotFather setup)."""
+    try:
+        await bot.set_my_commands(main_bot_commands())
+        logger.info("Registered main-bot command menu")
+    except TelegramAPIError as exc:
+        # Non-fatal: startup continues without the menu.
+        logger.warning("Failed to register command menu: %s", exc)
 
 
 def _create_bot_keyboard() -> ReplyKeyboardMarkup:
@@ -271,7 +290,7 @@ async def _show_my_bots(bot: Bot, owner_id: int) -> None:
 
 
 @main_router.message(Command("mybots"))
-@main_router.message(F.text == "My Bots")
+@main_router.message(F.text.in_(["My Bots", "🤖 My Bots"]))
 async def on_my_bots(message: Message, bot: Bot) -> None:
     """List the owner's bots (works for bots created before this feature too)."""
     if message.from_user is None:

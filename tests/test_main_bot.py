@@ -15,6 +15,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ManagedBotUpdated, User
 
 from tme.database.models import BotType
@@ -26,6 +28,7 @@ from tme.routers.main_bot import (
     on_my_bots,
     on_open_settings,
     on_pick_type,
+    register_main_commands,
 )
 
 
@@ -239,3 +242,27 @@ def test_my_bots_empty_state(monkeypatch) -> None:
     fake_bot.send_message.assert_awaited_once()
     text = fake_bot.send_message.await_args.kwargs["text"]
     assert "don't have any bots" in text
+
+
+def test_my_bots_button_filter_matches_emoji_variant() -> None:
+    """The reply-keyboard button sends '🤖 My Bots'; the filter must accept it."""
+    filt = F.text.in_(["My Bots", "🤖 My Bots"])
+    assert filt.resolve(SimpleNamespace(text="My Bots")) is True
+    assert filt.resolve(SimpleNamespace(text="🤖 My Bots")) is True
+    assert filt.resolve(SimpleNamespace(text="Something else")) is False
+
+
+def test_register_main_commands_sends_command_menu() -> None:
+    """Startup pushes /mybots into the bot's command menu automatically."""
+    fake_bot = AsyncMock()
+    asyncio.run(register_main_commands(fake_bot))
+    fake_bot.set_my_commands.assert_awaited_once()
+    commands = fake_bot.set_my_commands.await_args.args[0]
+    assert [c.command for c in commands] == ["start", "mybots"]
+
+
+def test_register_main_commands_tolerates_api_error() -> None:
+    """A Telegram API failure must not crash startup — the menu is cosmetic."""
+    fake_bot = AsyncMock()
+    fake_bot.set_my_commands.side_effect = TelegramBadRequest(method=None, message="boom")
+    asyncio.run(register_main_commands(fake_bot))  # must not raise

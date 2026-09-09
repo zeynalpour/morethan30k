@@ -32,6 +32,7 @@ from tme.core.dispatchers import main_dp, tenant_dp
 from tme.core.logging import configure_logging, get_logger
 from tme.core.redis_client import close_redis
 from tme.database.engine import dispose_engine
+from tme.routers.main_bot import register_main_commands
 
 logger = get_logger(__name__)
 
@@ -97,13 +98,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Fire-and-forget: keep a reference (RUF006) and cancel cleanly on shutdown
     # so registration retries never delay readiness or leak a pending task.
     register_task = asyncio.create_task(_register_main_webhook())
+    commands_task = asyncio.create_task(register_main_commands(main_bot))
 
     yield
 
     logger.info("TME gateway shutting down")
     register_task.cancel()
+    commands_task.cancel()
     with suppress(asyncio.CancelledError):
         await register_task
+    with suppress(asyncio.CancelledError):
+        await commands_task
     await close_registry()
     await close_redis()
     await dispose_engine()
