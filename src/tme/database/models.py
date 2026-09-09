@@ -11,10 +11,11 @@ the JSON flow that the dynamic router executes at runtime.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -125,6 +126,32 @@ class Bot(Base):
             f"<Bot id={self.id} tg={self.telegram_bot_id} @{self.username} "
             f"active={self.is_active} type={self.bot_type}>"
         )
+
+
+class DashboardAuthToken(Base):
+    """A short-lived bearer credential that opens the bot-settings dashboard.
+
+    Issued by the Main Bot when an owner opens settings for one of their bots.
+    Binds a Telegram user (``owner_telegram_id``) to one bot (``bot_id``) for
+    a limited window; once validated, the settings API authorizes every
+    request against ``owner_telegram_id`` (the initial ``bot_id`` is the mini
+    app's default view). Only the SHA-256 hash of the token is stored — the
+    raw token exists exactly once, in the link the Main Bot sends.
+    """
+
+    __tablename__ = "dashboard_auth_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    bot_id: Mapped[int] = mapped_column(
+        ForeignKey("bots.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    bot: Mapped[Bot] = relationship()
+    owner_telegram_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<DashboardAuthToken id={self.id} bot={self.bot_id} owner={self.owner_telegram_id}>"
 
 
 class BotConfig(Base):

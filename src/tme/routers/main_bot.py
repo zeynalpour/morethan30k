@@ -29,8 +29,10 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from tme.config import settings
 from tme.core.logging import get_logger
 from tme.database.models import BotType
+from tme.services.dashboard import create_dashboard_token_for_owner
 from tme.services.managed_bots import provision_managed_bot
 
 logger = get_logger(__name__)
@@ -56,6 +58,9 @@ _TYPE_CHOICES: dict[str, tuple[str, BotType]] = {
 #: gets a webhook until recreated. A second creation while one is pending
 #: replaces the first (the abandoned bot stays unprovisioned).
 _PENDING: dict[int, str] = {}
+
+#: Callback-data prefix for the settings-dashboard button ("settings:{bot_id}").
+_SETTINGS_PREFIX = "settings:"
 
 
 def _create_bot_keyboard() -> ReplyKeyboardMarkup:
@@ -213,6 +218,58 @@ async def on_pick_type(callback: CallbackQuery, bot: Bot) -> None:
     await bot.send_message(
         chat_id=callback.from_user.id,
         text=f"✅ {display} is live! Try sending it /start.",
+        reply_markup=_settings_keyboard(bot_row.id),
+    )
+
+
+def _settings_keyboard(bot_id: int) -> InlineKeyboardMarkup:
+    """Inline button that opens the BotFather-style settings dashboard."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Open Settings",
+                    callback_data=f"{_SETTINGS_PREFIX}{bot_id}",
+                )
+            ]
+        ]
+    )
+
+
+@main_router.callback_query(F.data.startswith(_SETTINGS_PREFIX))
+async def on_open_settings(callback: CallbackQuery, bot: Bot) -> None:
+    """Issue a short-lived dashboard link for one of the owner's bots."""
+    if callback.from_user is None:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Something went wrong — please try again.")
+        return
+
+    raw = callback.data or ""
+    try:
+        bot_id = int(raw.removeprefix(_SETTINGS_PREFIX))
+    except ValueError:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Unknown bot.")
+        return
+
+    token = await create_dashboard_token_for_owner(
+        bot_id=bot_id, owner_telegram_id=callback.from_user.id
+    )
+    if token is None:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Bot not found.")
+        return
+
+    link = f"{settings.webhook_base_url}/dashboard/?t={token}&bid={bot_id}"
+    with suppress(TelegramBadRequest):
+        await callback.answer()
+    await bot.send_message(
+        chat_id=callback.from_user.id,
+        text=(
+            f"⚙️ Here are the settings for your bot:\n{link}\n\n"
+            "The link expires in 15 minutes — ask for a new one any time."
+        ),
+        disable_web_page_preview=True,
     )
 
 

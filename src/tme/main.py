@@ -25,6 +25,7 @@ from aiogram.types import Update
 from fastapi import FastAPI, Header, Path, Request, Response
 from fastapi.responses import JSONResponse
 
+from tme.api.routes import router as api_router
 from tme.config import settings
 from tme.core.bot_registry import close_registry, get_tenant_bot, main_bot
 from tme.core.dispatchers import main_dp, tenant_dp
@@ -113,6 +114,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(api_router)
 
 
 def _verify_secret(header_value: str | None) -> bool:

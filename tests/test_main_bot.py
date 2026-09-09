@@ -23,6 +23,7 @@ from tme.routers.main_bot import (
     _create_bot_keyboard,
     _type_picker_keyboard,
     on_managed_bot,
+    on_open_settings,
     on_pick_type,
 )
 
@@ -85,7 +86,7 @@ def test_pick_type_provisions_with_chosen_type(monkeypatch) -> None:
     )
     pending = {42: "123456789:FAKE_TOKEN"}
     monkeypatch.setattr(main_router_module, "_PENDING", pending)
-    provision = AsyncMock(return_value=SimpleNamespace(username="echo_bot"))
+    provision = AsyncMock(return_value=SimpleNamespace(id=1, username="echo_bot"))
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
     fake_bot = AsyncMock()
 
@@ -164,3 +165,41 @@ def test_pick_type_provision_failure_restores_token(monkeypatch) -> None:
     fake_bot.send_message.assert_awaited_once()
     text = fake_bot.send_message.await_args.kwargs["text"]
     assert "Tap your chosen type again" in text
+
+
+def test_open_settings_issues_dashboard_link(monkeypatch) -> None:
+    """Tapping 'Open Settings' issues a token and sends the dashboard link."""
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data="settings:7",
+        answer=AsyncMock(),
+    )
+    issue = AsyncMock(return_value="RAWTOKEN")
+    monkeypatch.setattr("tme.routers.main_bot.create_dashboard_token_for_owner", issue)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_open_settings(callback, fake_bot))
+
+    issue.assert_awaited_once_with(bot_id=7, owner_telegram_id=42)
+    callback.answer.assert_awaited_once()
+    fake_bot.send_message.assert_awaited_once()
+    text = fake_bot.send_message.await_args.kwargs["text"]
+    assert "https://test.example.com/dashboard/?t=RAWTOKEN&bid=7" in text
+
+
+def test_open_settings_rejected_when_bot_not_owned(monkeypatch) -> None:
+    """Issuing a token for a bot the user doesn't own is refused."""
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data="settings:999",
+        answer=AsyncMock(),
+    )
+    issue = AsyncMock(return_value=None)
+    monkeypatch.setattr("tme.routers.main_bot.create_dashboard_token_for_owner", issue)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_open_settings(callback, fake_bot))
+
+    issue.assert_awaited_once()
+    fake_bot.send_message.assert_not_awaited()
+    callback.answer.assert_awaited_once()
