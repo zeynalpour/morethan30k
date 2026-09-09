@@ -127,12 +127,60 @@ cache invalidation; Supabase drops out of the data path.
 
 ---
 
+## Phase 1 — Multilanguage platform
+
+### S1.1 — Per-bot translations: schema + runtime + dashboard editor  *(done)*
+
+**Checklist**
+
+- [x] `translations` schema (`schemas/bot_config.py`): per-language overrides
+      (welcome, fallback, greeting, echo prefix, menu buttons) keyed by
+      ISO-639-1 code; validated at write time through the existing flow union.
+- [x] `tme/core/i18n.py`: `normalize_language()` (region codes → ISO-639-1)
+      and `localize()` with the fallback chain **user language → English →
+      base flow**, applied per field (a partial translation keeps the
+      English/base fields).
+- [x] Tenant router (`routers/dynamic.py`) reads `from_user.language_code` and
+      renders every user-facing text through `localize()`: welcome/greeting,
+      menu labels, fallback, echo prefix. No DB or middleware needed for the
+      auto-detection half of S1.2.
+- [x] Dashboard editor: per-language chips, per-field overrides, 📋
+      Copy-from-base helper (seeds a language from the base copy).
+- [x] Tests: resolver fallback chain (11 unit tests in `tests/test_i18n.py`);
+      the full-stack integration test PATCHes translations through the API and
+      asserts `localize()` reads them back from Redis.
+
+**Acceptance criteria**
+
+- A Persian user messaging a tenant bot with an `fa` translation gets Persian
+  copy; users of untranslated languages get English, then the base flow.
+- Translation edits go live within seconds (same Redis-cache invalidation
+  path as any config edit).
+
+### S1.2 — Per-user language preference *(planned)*
+
+**Checklist**
+
+- [ ] Persist a user's language choice — `users.language_code` column
+      (migration) defaulted from Telegram's `language_code` on first contact.
+- [ ] `/language` command with an inline-flag picker on tenant bots; choice
+      overrides the Telegram default.
+- [ ] `I18nMiddleware` on the tenant router — formalizes what S1.1 reads
+      inline and covers callback-only sessions too.
+
+### S1.3 — Main bot (control plane) i18n *(planned)*
+
+**Checklist**
+
+- [ ] Controller-bot copy in the owner's language; GOD works the platform in
+      GOD's language. 💡
+
+---
+
 ## Next milestones (brief)
 
-- **Phase 1 — Multilanguage platform** — per-bot `translations`, user language
-  preference, `I18nMiddleware`, main bot i18n.
 - **Phase 2 — Starter bots & template library** — Hello World, Echo, Feedback,
-  Quiz; templates seed configs from a registry.
+  Quiz; templates seed configs from a registry; versioned templates + clone.
 - **Phase 8 — Per-user bot settings** — extended vision beyond the S0.4 MVP:
   config history/rollback, template gallery, dashboard analytics.
 
@@ -142,5 +190,6 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S0.4** (owner bot-settings dashboard — BotFather-style; build on the merged
-bolt-new frontend). S0.2 is done — see its checklist for what landed.
+**→ S1.1** (per-bot translations) is done — S0.1–S0.4 are complete (see their
+checklists). Next: S1.2 (per-user language preference + `/language` +
+`I18nMiddleware`).

@@ -39,6 +39,27 @@ class MenuButton(BaseModel):
     )
 
 
+class Translation(BaseModel):
+    """Per-language overrides for a bot's user-facing copy (Phase 1 i18n).
+
+    Every field is optional; :func:`tme.core.i18n.localize` overlays the
+    present fields over the base flow (fallback chain: user language → English
+    → base). ``extra=allow`` keeps future translatable fields migration-free.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    welcome_message: str | None = Field(default=None, description="Localized /start text.")
+    fallback_message: str | None = Field(
+        default=None, description="Localized reply when no rule matches."
+    )
+    greeting: str | None = Field(default=None, description="Hello-bot localized greeting.")
+    echo_prefix: str | None = Field(default=None, description="Echo-bot localized prefix.")
+    menu_buttons: list[MenuButton] | None = Field(
+        default=None, description="Localized menu buttons (callback_data is shared)."
+    )
+
+
 class BotConfigBase(BaseModel):
     """Shared fields for every bot-config variant.
 
@@ -53,6 +74,13 @@ class BotConfigBase(BaseModel):
     model_config = ConfigDict(extra="allow")  # forward-compat: keep unknown keys.
 
     version: int = Field(default=1, ge=1, description="Config schema version.")
+    translations: dict[str, Translation] = Field(
+        default_factory=dict,
+        description=(
+            "Per-language copy overrides, keyed by ISO-639-1 code "
+            "(from the user's Telegram language_code)."
+        ),
+    )
     welcome_message: str = Field(
         default="👋 Welcome!",
         description="Text sent in response to /start (and as the flow root).",

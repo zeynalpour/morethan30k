@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tme import main
 from tme.config import settings
 from tme.core import cache as cache_module
+from tme.core.i18n import localize
 from tme.database import engine as engine_module
 from tme.database.models import Bot as BotModel, BotType
 from tme.services.managed_bots import provision_managed_bot
@@ -190,6 +191,10 @@ def test_config_patch_goes_live_through_cache(test_stack, monkeypatch) -> None:
                     "bot_type": "generic",
                     "welcome_message": "INTEGRATION-TEST",
                     "menu_buttons": [{"text": "X", "callback": "x"}],
+                    "translations": {
+                        "fa": {"welcome_message": "به‌روزرسانی فارسی", "fallback_message": "پاسخ"},
+                        "en": {"welcome_message": "Updated (en)"},
+                    },
                 }
             },
             headers=_auth_headers(),
@@ -201,6 +206,11 @@ def test_config_patch_goes_live_through_cache(test_stack, monkeypatch) -> None:
     live = test_stack(cache_module.get_bot_config(FAKE_TOKEN))
     assert live is not None
     assert live.welcome_message == "INTEGRATION-TEST"
+
+    # Phase 1: translations ride the same flow dict through the cache.
+    assert localize(live, "fa").welcome_message == "به‌روزرسانی فارسی"
+    assert localize(live, "de").welcome_message == "Updated (en)"  # en fallback
+    assert localize(live, "fa").fallback_message == "پاسخ"
 
 
 def test_disable_and_reenable_toggle(test_stack, monkeypatch) -> None:

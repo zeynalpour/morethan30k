@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData } from "../lib/api";
+import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData, Translation } from "../lib/api";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
 
 interface ConfigEditorProps {
@@ -19,6 +19,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
   const [activeModules, setActiveModules] = useState(
     Array.isArray(flow.active_modules) ? flow.active_modules.join(", ") : ""
   );
+  const [translations, setTranslations] = useState<Record<string, Translation>>(
+    flow.translations || {}
+  );
+  const [activeLang, setActiveLang] = useState<string | null>(
+    Object.keys(flow.translations || {})[0] ?? null
+  );
+  const [newLang, setNewLang] = useState("");
   const [menuButtons, setMenuButtons] = useState<MenuButtonData[]>(
     Array.isArray(flow.menu_buttons) ? flow.menu_buttons : []
   );
@@ -27,8 +34,65 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
   const isHello = bot.bot_type === "hello";
   const isEcho = bot.bot_type === "echo";
 
+  const addLang = useCallback(() => {
+    const code = newLang.trim().toLowerCase().replace(/[^a-z]/g, "");
+    if (!code) return;
+    setTranslations((prev) => ({ ...prev, [code]: prev[code] || {} }));
+    setActiveLang(code);
+    setNewLang("");
+  }, [newLang]);
+
+  const removeLang = useCallback(() => {
+    if (!activeLang) return;
+    setTranslations((prev) => {
+      const next = { ...prev };
+      delete next[activeLang];
+      return next;
+    });
+    setActiveLang(null);
+  }, [activeLang]);
+
+  const setLangField = useCallback(
+    (field: keyof Translation, value: string | MenuButtonData[]) => {
+      if (!activeLang) return;
+      setTranslations((prev) => ({
+        ...prev,
+        [activeLang]: { ...(prev[activeLang] || {}), [field]: value },
+      }));
+    },
+    [activeLang]
+  );
+
+  const copyFromBase = useCallback(() => {
+    if (!activeLang) return;
+    setTranslations((prev) => {
+      const cur = prev[activeLang] || {};
+      const merged: Translation = { ...cur };
+      if (!merged.welcome_message) merged.welcome_message = welcomeMessage;
+      if (!merged.fallback_message) merged.fallback_message = fallbackMessage;
+      if (isHello && !merged.greeting) merged.greeting = greeting;
+      if (isEcho && !merged.echo_prefix) merged.echo_prefix = echoPrefix;
+      if (!merged.menu_buttons || merged.menu_buttons.length === 0) {
+        merged.menu_buttons = menuButtons;
+      }
+      return { ...prev, [activeLang]: merged };
+    });
+  }, [activeLang, welcomeMessage, fallbackMessage, greeting, echoPrefix, menuButtons, isHello, isEcho]);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
+    // Drop empty languages and empty fields (empty string = "unset").
+    const cleanedTranslations: Record<string, Translation> = {};
+    for (const [lang, tr] of Object.entries(translations)) {
+      const cleaned: Translation = {};
+      for (const [field, value] of Object.entries(tr)) {
+        if (Array.isArray(value) ? value.length > 0 : value !== undefined && value !== "") {
+          cleaned[field as keyof Translation] = value;
+        }
+      }
+      if (Object.keys(cleaned).length > 0) cleanedTranslations[lang] = cleaned;
+    }
+
     const newFlow: BotConfigFlow = {
       ...flow,
       bot_type: flow.bot_type || "generic",
@@ -40,12 +104,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
         .split(",")
         .map((m) => m.trim())
         .filter(Boolean),
+      translations: cleanedTranslations,
     };
     if (isHello) newFlow.greeting = greeting;
     if (isEcho) newFlow.echo_prefix = echoPrefix;
     onSave(newFlow);
     setSaving(false);
-  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, greeting, echoPrefix, isHello, isEcho, onSave]);
+  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, greeting, echoPrefix, isHello, isEcho, onSave]);
 
   return (
     <div className="px-4 py-4 space-y-5">
@@ -107,6 +172,124 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
           onChange={(e) => setActiveModules(e.target.value)}
           placeholder="module-a, module-b"
         />
+      </Section>
+
+      <Section
+        title="Translations"
+        subtitle="Users see the bot in their Telegram language — per field: user language → English → base"
+      >
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {Object.keys(translations).map((lang) => (
+            <button
+              key={lang}
+              onClick={() => setActiveLang(lang)}
+              className="text-xs px-2.5 py-1 rounded-full"
+              style={{
+                background: activeLang === lang ? "var(--tg-button-bg)" : "var(--tg-secondary-bg)",
+                color: activeLang === lang ? "var(--tg-button-text)" : "var(--tg-text)",
+              }}
+            >
+              {lang}
+            </button>
+          ))}
+          <input
+            type="text"
+            value={newLang}
+            onChange={(e) => setNewLang(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addLang();
+            }}
+            onBlur={addLang}
+            placeholder="+ code (e.g. fa)"
+            className="w-28 text-xs"
+          />
+        </div>
+
+        {activeLang && (
+          <div
+            className="mt-3 p-3 rounded-xl space-y-3"
+            style={{ background: "var(--tg-secondary-bg)" }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium" style={{ color: "var(--tg-text)" }}>
+                Editing: <b>{activeLang}</b>
+              </span>
+              <button
+                className="text-xs"
+                style={{ color: "var(--tg-hint)" }}
+                onClick={removeLang}
+              >
+                ✕ Remove
+              </button>
+            </div>
+
+            <label className="block">
+              <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                Welcome message
+              </span>
+              <textarea
+                rows={2}
+                value={translations[activeLang]?.welcome_message || ""}
+                onChange={(e) => setLangField("welcome_message", e.target.value)}
+                placeholder={welcomeMessage}
+              />
+            </label>
+
+            {isHello && (
+              <label className="block">
+                <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                  Greeting
+                </span>
+                <textarea
+                  rows={2}
+                  value={translations[activeLang]?.greeting || ""}
+                  onChange={(e) => setLangField("greeting", e.target.value)}
+                  placeholder={greeting}
+                />
+              </label>
+            )}
+
+            {isEcho && (
+              <label className="block">
+                <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                  Echo prefix
+                </span>
+                <input
+                  type="text"
+                  value={translations[activeLang]?.echo_prefix || ""}
+                  onChange={(e) => setLangField("echo_prefix", e.target.value)}
+                  placeholder={echoPrefix}
+                />
+              </label>
+            )}
+
+            <label className="block">
+              <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                Fallback message
+              </span>
+              <textarea
+                rows={2}
+                value={translations[activeLang]?.fallback_message || ""}
+                onChange={(e) => setLangField("fallback_message", e.target.value)}
+                placeholder={fallbackMessage}
+              />
+            </label>
+
+            <div>
+              <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                Menu buttons
+              </span>
+              <MenuButtonsEditor
+                buttons={translations[activeLang]?.menu_buttons || []}
+                onChange={(b) => setLangField("menu_buttons", b)}
+              />
+            </div>
+
+            <button className="btn-secondary w-full" onClick={copyFromBase}>
+              📋 Copy from base
+            </button>
+          </div>
+        )}
       </Section>
 
       <Section title="Fallback Message" subtitle="Reply when the bot doesn't understand a message">

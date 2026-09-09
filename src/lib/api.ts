@@ -19,6 +19,16 @@ export interface MenuButtonData {
   url?: string | null;
 }
 
+// Per-language copy overrides (Phase 1 i18n). Every field optional — the
+// backend falls back per field: user language → English → base flow.
+export interface Translation {
+  welcome_message?: string;
+  fallback_message?: string;
+  greeting?: string;
+  echo_prefix?: string;
+  menu_buttons?: MenuButtonData[];
+}
+
 export interface BotConfigFlow {
   bot_type?: string;
   version?: number;
@@ -28,6 +38,7 @@ export interface BotConfigFlow {
   fallback_message?: string;
   greeting?: string;
   echo_prefix?: string;
+  translations?: Record<string, Translation>;
 }
 
 export interface BotConfigRow {
