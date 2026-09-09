@@ -23,6 +23,7 @@ from tme.routers.main_bot import (
     _create_bot_keyboard,
     _type_picker_keyboard,
     on_managed_bot,
+    on_my_bots,
     on_open_settings,
     on_pick_type,
 )
@@ -42,6 +43,8 @@ def test_create_bot_keyboard_is_valid() -> None:
     assert button.request_managed_bot is not None
     assert button.request_managed_bot.request_id == 1  # required by aiogram
     assert button.text == "➕ Create a Managed Bot"
+    # Second row: entry point to the My Bots list (existing bots included).
+    assert kb.keyboard[1][0].text == "🤖 My Bots"
 
 
 def test_managed_bot_handler_asks_for_type(monkeypatch) -> None:
@@ -203,3 +206,36 @@ def test_open_settings_rejected_when_bot_not_owned(monkeypatch) -> None:
     issue.assert_awaited_once()
     fake_bot.send_message.assert_not_awaited()
     callback.answer.assert_awaited_once()
+
+
+def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
+    """Existing bots get a settings button too — not just newly created ones."""
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42))
+    fake_bot = AsyncMock()
+    bots = [SimpleNamespace(id=1, username="alpha"), SimpleNamespace(id=2, username=None)]
+    lst = AsyncMock(return_value=bots)
+    monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", lst)
+
+    asyncio.run(on_my_bots(message, fake_bot))
+
+    lst.assert_awaited_once_with(owner_telegram_id=42)
+    fake_bot.send_message.assert_awaited_once()
+    kb = fake_bot.send_message.await_args.kwargs["reply_markup"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert callbacks == ["settings:1", "settings:2"]
+    assert labels[0] == "⚙️ @alpha"
+    assert labels[1] == "⚙️ Bot #2"  # nameless bot falls back to its id
+
+
+def test_my_bots_empty_state(monkeypatch) -> None:
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42))
+    fake_bot = AsyncMock()
+    lst = AsyncMock(return_value=[])
+    monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", lst)
+
+    asyncio.run(on_my_bots(message, fake_bot))
+
+    fake_bot.send_message.assert_awaited_once()
+    text = fake_bot.send_message.await_args.kwargs["text"]
+    assert "don't have any bots" in text

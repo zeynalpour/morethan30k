@@ -72,6 +72,18 @@ async def create_dashboard_token_for_owner(
     return token
 
 
+async def list_bots_for_owner(owner_telegram_id: int) -> list[BotModel]:
+    """Every bot owned by a Telegram user, newest first (for the My Bots list)."""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(BotModel)
+            .join(BotModel.owner)
+            .where(User.telegram_id == owner_telegram_id)
+            .order_by(BotModel.created_at.desc())
+        )
+        return list(result.scalars())
+
+
 async def validate_dashboard_token(token: str) -> DashboardAuthToken | None:
     """Return the token row if valid (exists + unexpired); record first use.
 

@@ -16,7 +16,7 @@ from contextlib import suppress
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.methods import GetManagedBotToken
 from aiogram.types import (
     CallbackQuery,
@@ -31,8 +31,8 @@ from aiogram.types import (
 
 from tme.config import settings
 from tme.core.logging import get_logger
-from tme.database.models import BotType
-from tme.services.dashboard import create_dashboard_token_for_owner
+from tme.database.models import Bot as BotModel, BotType
+from tme.services.dashboard import create_dashboard_token_for_owner, list_bots_for_owner
 from tme.services.managed_bots import provision_managed_bot
 
 logger = get_logger(__name__)
@@ -72,7 +72,8 @@ def _create_bot_keyboard() -> ReplyKeyboardMarkup:
                     text="➕ Create a Managed Bot",
                     request_managed_bot=KeyboardButtonRequestManagedBot(request_id=1),
                 )
-            ]
+            ],
+            [KeyboardButton(text="🤖 My Bots")],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -234,6 +235,48 @@ def _settings_keyboard(bot_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def _bots_keyboard(bots: list[BotModel]) -> InlineKeyboardMarkup:
+    """One '⚙️ Open Settings' button per owned bot (My Bots list)."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"⚙️ {f'@{bot.username}' if bot.username else f'Bot #{bot.id}'}",
+                callback_data=f"{_SETTINGS_PREFIX}{bot.id}",
+            )
+        ]
+        for bot in bots
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_my_bots(bot: Bot, owner_id: int) -> None:
+    """Send the owner's bot list with a settings button per bot."""
+    bots = await list_bots_for_owner(owner_telegram_id=owner_id)
+    if not bots:
+        await bot.send_message(
+            chat_id=owner_id,
+            text=(
+                "🤖 You don't have any bots yet — tap "
+                "“➕ Create a Managed Bot” to make your first one."
+            ),
+        )
+        return
+    await bot.send_message(
+        chat_id=owner_id,
+        text=(f"Your bots ({len(bots)}):\n\nTap a bot to open its ⚙️ settings."),
+        reply_markup=_bots_keyboard(bots),
+    )
+
+
+@main_router.message(Command("mybots"))
+@main_router.message(F.text == "My Bots")
+async def on_my_bots(message: Message, bot: Bot) -> None:
+    """List the owner's bots (works for bots created before this feature too)."""
+    if message.from_user is None:
+        return
+    await _show_my_bots(bot, message.from_user.id)
 
 
 @main_router.callback_query(F.data.startswith(_SETTINGS_PREFIX))
