@@ -60,11 +60,18 @@ export default function App() {
 
   useEffect(() => {
     // Auth comes from Telegram itself: the Mini App's initData, signed with
-    // the bot token. Without it (plain browser), the backend would reject us.
-    const initData = window.Telegram?.WebApp?.initData ?? "";
+    // the bot token. Without it (plain browser / unregistered domain), the
+    // backend would reject us.
+    const tg = window.Telegram?.WebApp;
+    const initData =
+      tg?.initData ||
+      // Fallback: Telegram also passes initData as the tgWebAppData query
+      // param on the initial WebView URL.
+      new URLSearchParams(window.location.search).get("tgWebAppData") ||
+      "";
     if (!initData) {
       setErrorMsg(
-        "This dashboard opens inside Telegram — tap “🚀 Open Dashboard” in the Main Bot."
+        "This dashboard opens only as a Mini App inside Telegram — tap “🚀 Open Dashboard” in the Main Bot. If it still fails, register the bot's Web App domain in @BotFather: /setdomain → tme-dev.izhex.com."
       );
       setView("error");
       return;

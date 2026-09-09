@@ -62,6 +62,10 @@ async def _require_auth(
     """
     telegram_id = validate_telegram_init_data(x_telegram_init_data)
     if telegram_id is None:
+        logger.warning(
+            "Rejected dashboard API request: missing or invalid initData "
+            "(mini app opened outside Telegram, or domain not registered in BotFather)"
+        )
         raise HTTPException(status_code=401, detail="Missing or invalid Telegram auth")
     return telegram_id
 
