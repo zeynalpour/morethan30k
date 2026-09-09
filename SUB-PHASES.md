@@ -81,35 +81,25 @@ envelope encryption). AI gateway bots need key storage immediately.
 - Tokens/keys are not plaintext in the DB.
 - Read/write paths handle legacy plaintext rows once.
 
-### S0.4 — Sync ROADMAP.md statuses as sub-phases land
-
-**Checklist**
-
-- [x] ROADMAP Phase 0 items flip 🟡/⚪ → 🟢 as S0.x completes.
-- [x] SUB-PHASES stays the canonical checklist for the current phase.
-
----
-
-## Phase 8 — Per-user bot settings (BotFather-style mini app)
-
-### S8.1 — Owner settings editor (MVP)
+### S0.4 — Owner bot-settings dashboard (BotFather-style mini app)
 
 **Context.** Every bot owner should manage their own bots from a settings UI
 (BotFather-style) instead of raw JSON. A React frontend scaffold is already
 in-tree (bolt-new PR: `src/App.tsx`, `BotList`, `ConfigEditor`,
 `MenuButtonsEditor`, `BotHeader`, `src/lib/supabase.ts`) and must be wired to
-the backend.
+the backend. **Decision (resolved):** management plane is the FastAPI CRUD API
+(`/api/bots*`), not direct Supabase writes — single source of truth + Redis
+cache invalidation; Supabase drops out of the data path.
 
 **Checklist**
 
-- [ ] Pick the management plane: FastAPI CRUD API vs direct Supabase writes —
-      single source of truth + Redis-cache invalidation argue for the API;
-      speed argues for Supabase-direct.
+- [ ] `dashboard_auth_tokens` table (migration 0003) + issue/validate service.
 - [ ] Owner-only access: auth binds to `users.telegram_id`; users list and
       edit only their own bots.
 - [ ] Settings editor: bot type, welcome message, menu buttons, fallback text
       → write `bot_configs.flow`, invalidate the cache.
 - [ ] Bot status view: webhook state, active toggle, username/title.
+- [ ] Repoint the bolt-new frontend from Supabase to the API.
 - [ ] Isolation + cache-invalidation integration tests.
 
 **Acceptance criteria**
@@ -117,6 +107,13 @@ the backend.
 - A user sees only bots they own; edits go live within seconds (cache
   invalidated).
 - No token or secret is ever exposed to the frontend.
+
+### S0.5 — Sync ROADMAP.md statuses as sub-phases land
+
+**Checklist**
+
+- [x] ROADMAP Phase 0 items flip 🟡/⚪ → 🟢 as S0.x completes.
+- [x] SUB-PHASES stays the canonical checklist for the current phase.
 
 ---
 
@@ -126,8 +123,8 @@ the backend.
   preference, `I18nMiddleware`, main bot i18n.
 - **Phase 2 — Starter bots & template library** — Hello World, Echo, Feedback,
   Quiz; templates seed configs from a registry.
-- **Phase 8 — Per-user bot settings** — BotFather-style settings UI (see S8.1
-  above; currently in focus).
+- **Phase 8 — Per-user bot settings** — BotFather-style settings UI (working
+  sub-phase S0.4; currently in focus).
 
 Full checklists for these phases are written here when we start them.
 
@@ -135,5 +132,5 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S8.1** (owner bot-settings editor — BotFather-style; build on the merged
+**→ S0.4** (owner bot-settings dashboard — BotFather-style; build on the merged
 bolt-new frontend). S0.2 is done — see its checklist for what landed.

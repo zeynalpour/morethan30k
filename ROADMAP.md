@@ -140,10 +140,10 @@ instead of raw JSON. Builds on the merged bolt-new React frontend
 - 🧭 **Config history & rollback** — reuses `BotConfigSchema.version`.
 - 🧭 **Template gallery integration** — pick a template on create (Phase 2).
 
-*Architecture decision pending (blocks S8.1):* the merged frontend reads
-Supabase directly while the backend keeps Postgres as the system of record.
-Pick one management plane — FastAPI CRUD API (single source of truth + cache
-invalidation) vs Supabase-direct (faster to ship, two write paths).
+*Architecture decision (resolved, S0.4):* management plane is the FastAPI CRUD
+API — single source of truth + Redis-cache invalidation. Direct Supabase
+writes were rejected: they cannot invalidate the Redis config cache, would
+expose `bots.token` to the browser, and split the source of truth.
 
 ---
 
