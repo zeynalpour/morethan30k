@@ -233,10 +233,145 @@ tenant bots read — one pick localizes the whole platform for that owner.
 
 ---
 
+## Phase 2 — Starter bots & template library
+
+### S2.1 — Template registry core (versioned, in-code)
+
+**Context.** A template is **seed data for a `BotConfig`** — a named,
+versioned flow snapshot (bot_type, welcome message, fallback, menu
+buttons, …) held in an **in-code registry** under `src/tme/templates/`.
+Instantiating a template adds **no new handler, no new `BotType`, no
+per-template code**: a bot made from a template is a new `bot_configs`
+row like any other (north-star: JSON in Postgres → Redis cache → one
+shared engine). The registry is the single source that both the
+creation-flow picker (S2.2) and the re-clone path (S2.3) read, and it
+stays pure data — importable with no DB or Redis. A `templates` database
+table only becomes interesting when a marketplace does; this phase does
+not need one.
+
+**Checklist**
+
+- [ ] `src/tme/templates/` package: `TemplateSpec` (id, version, title,
+      blurb, bot_type, seed flow dict) + the registry module holding the
+      versioned entries.
+- [ ] Launch set of five templates: **Hello World**, **Echo**, **Feedback
+      collector**, **Quiz**, **Simple form**. Hello/Echo reuse the existing
+      config variants; the conversational three are generic flows whose
+      `steps` data the shared engine consumes (S2.2). AI gateway stays out
+      — "later" per ROADMAP.
+- [ ] Registry API: list (picker source), lookup by id, latest-version
+      resolution — one source of truth, so picker UI and template data
+      cannot drift.
+- [ ] Every entry's seed flow validates against `BotConfigUnion`
+      (round-trips through `parse_bot_config`); a malformed template fails
+      its own test, never a live user.
+- [ ] Template provenance recorded on the seeded config (`template_id` +
+      `template_version`) so S2.3 knows which seed a bot came from; exact
+      storage shape (flow rider vs. column) is the Architect's call.
+- [ ] Tests: ids unique, versions monotonic per id, every seed parses and
+      the engine can run it; provisioning from a template seeds exactly
+      the template's flow.
+
+**Acceptance criteria**
+
+- Adding a template = adding a data entry to the registry — zero engine,
+  router, or enum changes.
+- The registry imports with no infrastructure (pure in-memory data);
+  validation tests run without Postgres/Redis.
+- No template introduces per-template runtime code of any kind.
+
+### S2.2 — Template picker in the controller bot-creation flow
+
+**Context.** After `ManagedBotUpdated` the controller offers a three-way
+type picker (`_TYPE_CHOICES`: Generic/Hello/Echo) and provisions with
+`_default_config_for(bot_type)`. Phase 2 turns that moment into the
+template gallery's front door: one card per registry entry (title, blurb,
+what you get) plus a "start from scratch" card that preserves today's
+bare-type behaviour. Template-first creation means nobody faces a blank
+page; the blank canvas stays the expert's choice.
+
+**Checklist**
+
+- [ ] Picker keyboard derives from the registry list (same single-source
+      pattern as `_TYPE_CHOICES`); card callback data keyed by template
+      id; a "start from scratch" card seeds today's generic default (the
+      Hello World / Echo cards subsume the old type buttons).
+- [ ] `provision_managed_bot` accepts a template id and seeds the chosen
+      template's flow instead of the bare per-type default; cache priming
+      mirrors exactly what was persisted; provenance written per S2.1.
+- [ ] Shared conversational primitive for the Feedback/Quiz/Simple-form
+      templates: a `steps` array in the generic flow (prompt → free-text
+      or option-button answer → next step; quiz steps carry
+      `correct_answers` + a result screen), driven by ONE shared path in
+      the dynamic router keyed on config data — the only engine change
+      this phase; no per-template handlers.
+- [ ] Collected answers persisted to a single shared `collected_responses`
+      table (bot FK, chat, JSON answers) + migration — one table serves
+      feedback, forms, and quizzes.
+- [ ] Controller copy for cards and every new message localized through
+      `MAIN_BOT_STRINGS` (en + fa; key drift is a test failure);
+      emoji-labelled buttons keep their filter variants covered.
+- [ ] Tests: picker renders one card per registry template; provisioning
+      seeds the chosen flow; each conversational template's seed drives
+      the expected behaviour through the shared router; existing
+      generic/hello/echo behaviour unchanged.
+
+**Acceptance criteria**
+
+- A new owner goes from "create bot" to a working Feedback/Quiz/Form bot
+  without touching JSON: the picked bot is live and behaves as its card
+  advertised, immediately.
+- No per-template handler or `BotType` member is added — the three
+  conversational templates run as generic flows on one shared steps path.
+- Bots of every existing type keep their current behaviour (hello/echo
+  regression tests stay green).
+- The picker is localized (en + fa) like the rest of the controller.
+
+### S2.3 — Versioned templates + re-clone into existing bots
+
+**Context.** Templates version: bumping one is a data edit in the
+registry, and an owner can push the latest seed into a bot they already
+own. Re-clone replaces the **base copy only** — the owner's `translations`
+and `single_language` mode survive the reset (the Phase 1 layer stays
+theirs). This is ROADMAP's "Hello World today, marketplace tomorrow"
+mechanic: provenance recorded at creation (S2.1) tells the dashboard
+which template a bot came from and whether a newer version exists.
+
+**Checklist**
+
+- [ ] Version-bump mechanics in the registry: per-id versioning, latest
+      resolution; a bump = one data edit (+ its tests).
+- [ ] Re-clone service: apply a template's latest seed to an existing
+      bot's base flow, preserve `translations` + `single_language`,
+      update provenance to the new version; the flow is revalidated
+      through `BotConfigUnion` before persisting.
+- [ ] Dashboard "Reset to template" action: shows the bot's provenance
+      (template + version, "update available" when the registry is ahead),
+      asks for confirmation, then re-clones; owner-scoped like every
+      `/api/bots*` route; cache invalidated on write.
+- [ ] Bots without provenance can adopt a template through the same path
+      (pre-Phase-2 and scratch bots are not stranded); `bot_type` follows
+      the template, reusing the existing type-switch write path.
+- [ ] No silent auto-updates — live bots change only on an explicit owner
+      action.
+- [ ] Tests: re-clone preserves translations/single-language and bumps
+      provenance; cache invalidated; another owner's bot → 404; type
+      follows template on adoption.
+
+**Acceptance criteria**
+
+- Bumping a template never mutates live bots by itself; every re-clone is
+  an explicit, confirmed owner action.
+- After a re-clone the base copy matches the latest seed while the
+  owner's translations and language mode are intact.
+- Changes are live within seconds (Redis cache invalidated) — the same
+  invariant as every other settings write.
+- Pre-Phase-2 bots can adopt a template later.
+
+---
+
 ## Next milestones (brief)
 
-- **Phase 2 — Starter bots & template library** — Hello World, Echo, Feedback,
-  Quiz; templates seed configs from a registry; versioned templates + clone.
 - **Phase 8 — Per-user bot settings** — extended vision beyond the S0.4 MVP:
   config history/rollback, template gallery, dashboard analytics.
 
@@ -246,7 +381,10 @@ Full checklists for these phases are written here when we start them.
 
 ## Current focus
 
-**→ S1.1 + S1.2 + S1.3 are done** (per-bot translations, per-user `/language`
-preference, single-language mode, controller copy in the owner's language)
-— S0.1–S0.4 complete. **Phase 1 is done.** Next: Phase 2 (template gallery
-etc. — see ROADMAP).
+**→ Phase 2 — Starter bots & template library** (the active phase).
+Phase 0 (S0.1–S0.4) and Phase 1 (S1.1–S1.3) are **done**; the S0.3
+Secret Vault landed and its follow-up PR #4 is open awaiting owner
+review, alongside PR #3 (E2E Telegram harness). The three Phase 2
+sub-phases — S2.1 template registry core, S2.2 template picker in the
+creation flow, S2.3 versioned templates + re-clone — are planned above;
+S2.1 is the next focus.
