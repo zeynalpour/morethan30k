@@ -39,6 +39,10 @@ inputs:
   redis_url:
     description: "Redis URL; host MUST be the dedicated 'redis' service."
     required: true
+  app_env:
+    description: "Deployment stage written into the stack's .env (dev | test | prod). Gates E2E userbot tests (dev only)."
+    required: true
+    default: "test"
   # --- placement / isolation ---
   deploy_path:
     description: "Target directory on the server (relative to $HOME, or absolute)."
@@ -111,6 +115,7 @@ runs:
         WEBHOOK_SECRET: ${{ inputs.webhook_secret }}
         DATABASE_URL: ${{ inputs.database_url }}
         REDIS_URL: ${{ inputs.redis_url }}
+        APP_ENV: ${{ inputs.app_env }}
       run: |
         set -euo pipefail
 
@@ -155,6 +160,7 @@ runs:
         fi
 
         ENVFILE="$(cat <<EOF
+        APP_ENV=$APP_ENV
         MAIN_BOT_TOKEN=$MAIN_BOT_TOKEN
         WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL
         WEBHOOK_SECRET=$WEBHOOK_SECRET

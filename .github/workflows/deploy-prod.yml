@@ -41,6 +41,7 @@ jobs:
           webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           database_url: ${{ secrets.DATABASE_URL }}
           redis_url: ${{ secrets.REDIS_URL }}
+          app_env: "prod"
           deploy_path: ${{ vars.DEPLOY_PATH || 'tme-prod' }}
           compose_project: ${{ vars.COMPOSE_PROJECT || 'tme-prod' }}
           app_port: ${{ vars.APP_PORT || '8080' }}
