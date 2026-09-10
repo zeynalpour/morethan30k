@@ -1,12 +1,12 @@
 """Regression tests for the main controller bot /start + managed-bot flow.
 
-Pins two production bugs:
+Pins two production bugs (Phase 0) and the Phase 2 S2.2 template picker:
 
 * ``KeyboardButtonRequestManagedBot()`` crashed on /start because aiogram's
   model requires ``request_id`` — the welcome message was never sent.
 * The ``managed_bot`` typed handler: fetches the token via the native
-  ``GetManagedBotToken`` method and provisions the bot (replaces the old
-  raw-dict path).
+  ``GetManagedBotToken`` method and parks it until the owner picks a
+  template card (registry-driven ``tmpl:`` picker).
 """
 
 from __future__ import annotations
@@ -23,14 +23,21 @@ from tme.config import settings
 from tme.database.models import BotType
 from tme.routers import main_bot as main_router_module
 from tme.routers.main_bot import (
+    _SCRATCH_ID,
     _create_bot_keyboard,
-    _type_picker_keyboard,
+    _template_button,
+    _template_picker_keyboard,
     on_dashboard_command,
     on_managed_bot,
     on_my_bots,
-    on_pick_type,
+    on_pick_template,
     register_main_commands,
 )
+from tme.schemas.bot_config import BotConfigSchema
+from tme.templates import TemplateSpec, get_template, list_templates
+
+#: The exact registry order the picker must mirror (single source of truth).
+_TEMPLATE_IDS = [spec.id for spec in list_templates()]
 
 
 def _make_event() -> ManagedBotUpdated:
@@ -38,6 +45,15 @@ def _make_event() -> ManagedBotUpdated:
     owner = User(id=42, is_bot=False, first_name="Owner", username="owner_user")
     managed = User(id=999, is_bot=True, first_name="TestBot", username="test_bot")
     return ManagedBotUpdated(user=owner, bot_user=managed)
+
+
+def _callback(data: str) -> SimpleNamespace:
+    """A ``tmpl:`` callback from owner 42 with a recording ``answer``."""
+    return SimpleNamespace(
+        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
+        data=data,
+        answer=AsyncMock(),
+    )
 
 
 def test_create_bot_keyboard_is_valid() -> None:
@@ -51,8 +67,8 @@ def test_create_bot_keyboard_is_valid() -> None:
     assert kb.keyboard[1][0].text == "🤖 My Bots"
 
 
-def test_managed_bot_handler_asks_for_type(monkeypatch) -> None:
-    """The typed handler fetches the token, then asks for a type — no provisioning yet."""
+def test_managed_bot_handler_asks_for_template(monkeypatch) -> None:
+    """The typed handler fetches the token, then offers the gallery — no provisioning yet."""
     event = _make_event()
     pending: dict = {}
     monkeypatch.setattr(main_router_module, "_PENDING", pending)
@@ -66,79 +82,140 @@ def test_managed_bot_handler_asks_for_type(monkeypatch) -> None:
 
     asyncio.run(on_managed_bot(event, fake_bot))
 
-    # The token is held back, not provisioned, until the owner picks a type.
+    # The token is held back, not provisioned, until the owner picks a card.
     provision.assert_not_awaited()
     assert pending == {42: "123456789:FAKE_TOKEN"}
 
-    # The owner was sent the type picker.
+    # The owner was sent the template picker.
     fake_bot.send_message.assert_awaited_once()
     send_kwargs = fake_bot.send_message.await_args.kwargs
     assert send_kwargs["chat_id"] == 42
     picker = send_kwargs["reply_markup"]
     labels = [b.callback_data for row in picker.inline_keyboard for b in row]
-    assert labels == ["pick:generic", "pick:hello", "pick:echo"]
+    assert labels == [f"tmpl:{id_}" for id_ in _TEMPLATE_IDS] + ["tmpl:scratch"]
 
 
-def test_type_picker_keyboard_is_valid() -> None:
-    """The picker must offer every provisionable behaviour type."""
-    kb = _type_picker_keyboard()
-    labels = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert labels == ["pick:generic", "pick:hello", "pick:echo"]
+def test_template_picker_keyboard_is_valid() -> None:
+    """One card per registry template (registration order) + the scratch card."""
+    kb = _template_picker_keyboard()
+    datas = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert datas == [f"tmpl:{id_}" for id_ in _TEMPLATE_IDS] + ["tmpl:scratch"]
+    # Every label is localized non-empty copy.
+    assert all(row[0].text for row in kb.inline_keyboard)
+    # Telegram's 64-byte callback_data cap (ids are ≤32 chars by spec).
+    assert max(len(data) for data in datas) < 64
 
 
-def test_pick_type_provisions_with_chosen_type(monkeypatch) -> None:
-    """Picking a type provisions the pending bot with it and confirms."""
-    callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="pick:echo",
-        answer=AsyncMock(),
+def test_template_button_falls_back_to_display_name() -> None:
+    """A template id without a ``tmpl.{id}`` copy key must not crash the picker.
+
+    Covers a spec registered before its copy key landed: ``tr`` raises KeyError
+    against the English table (a missing key is a programming error) — the
+    button degrades to the registry's own ``display_name`` instead.
+    """
+    unregistered = TemplateSpec(
+        id="no_copy_key_yet",
+        version=1,
+        bot_type=BotType.GENERIC,
+        display_name="Future Template",
+        description="Registered before its copy key landed.",
+        seed=BotConfigSchema.default(),
     )
+    button = _template_button("en", unregistered)
+    assert button.text == "Future Template"
+    assert button.callback_data == "tmpl:no_copy_key_yet"
+
+
+def test_scratch_id_is_never_a_registry_template() -> None:
+    """The reserved ``tmpl:scratch`` card must never shadow a real template.
+
+    ``scratch`` is a sentinel, not a registry id — a template registered with
+    that id would be unreachable (its callback always takes the scratch
+    branch). Pin the reservation so a future registration fails here first.
+    """
+    assert _SCRATCH_ID not in {spec.id for spec in list_templates()}
+
+
+def test_pick_template_provisions_with_that_seed(monkeypatch) -> None:
+    """Picking a card provisions the pending bot with THAT template's seed."""
+    callback = _callback("tmpl:quiz")
     pending = {42: "123456789:FAKE_TOKEN"}
     monkeypatch.setattr(main_router_module, "_PENDING", pending)
-    provision = AsyncMock(return_value=SimpleNamespace(id=1, username="echo_bot"))
+    provision = AsyncMock(return_value=SimpleNamespace(id=1, username="quiz_bot"))
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
     fake_bot = AsyncMock()
 
-    asyncio.run(on_pick_type(callback, fake_bot))
+    asyncio.run(on_pick_template(callback, fake_bot))
 
     provision.assert_awaited_once()
     call_kwargs = provision.await_args.kwargs
     assert call_kwargs["token"] == "123456789:FAKE_TOKEN"
     assert call_kwargs["owner_telegram_id"] == 42
-    assert call_kwargs["bot_type"] is BotType.ECHO
+    # The seed is exactly the registry's latest quiz seed — stamped flow and all.
+    assert call_kwargs["seed"] is get_template("quiz").seed
     assert 42 not in pending  # consumed by the pick
 
     callback.answer.assert_awaited_once()
     fake_bot.send_message.assert_awaited_once()
     send_kwargs = fake_bot.send_message.await_args.kwargs
     assert send_kwargs["chat_id"] == 42
-    assert "@echo_bot" in send_kwargs["text"]
+    assert "@quiz_bot" in send_kwargs["text"]
 
 
-def test_pick_type_without_pending_answers_expired(monkeypatch) -> None:
+def test_pick_scratch_provisions_without_seed(monkeypatch) -> None:
+    """ "Start from scratch" keeps today's bare no-template path (seed=None)."""
+    callback = _callback("tmpl:scratch")
+    pending = {42: "123456789:FAKE_TOKEN"}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
+    provision = AsyncMock(return_value=SimpleNamespace(id=1, username="plain_bot"))
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_template(callback, fake_bot))
+
+    provision.assert_awaited_once()
+    assert provision.await_args.kwargs["seed"] is None
+    assert 42 not in pending
+    fake_bot.send_message.assert_awaited_once()  # bot_live confirmation
+
+
+def test_pick_unknown_template_answers_gracefully(monkeypatch) -> None:
+    """A stale/unknown callback id must answer politely and keep the token pending."""
+    callback = _callback("tmpl:deleted_template")
+    pending = {42: "123456789:FAKE_TOKEN"}
+    monkeypatch.setattr(main_router_module, "_PENDING", pending)
+    provision = AsyncMock()
+    monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
+    fake_bot = AsyncMock()
+
+    asyncio.run(on_pick_template(callback, fake_bot))
+
+    provision.assert_not_awaited()
+    fake_bot.send_message.assert_not_awaited()
+    callback.answer.assert_awaited_once()  # err.unknown_template toast
+    assert pending == {42: "123456789:FAKE_TOKEN"}  # still pickable
+
+
+def test_pick_template_without_pending_answers_expired(monkeypatch) -> None:
     """A stale pick (no pending token) must not provision anything."""
-    callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="pick:hello",
-        answer=AsyncMock(),
-    )
+    callback = _callback("tmpl:hello_world")
     monkeypatch.setattr(main_router_module, "_PENDING", {})
     provision = AsyncMock()
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
     fake_bot = AsyncMock()
 
-    asyncio.run(on_pick_type(callback, fake_bot))
+    asyncio.run(on_pick_template(callback, fake_bot))
 
     provision.assert_not_awaited()
     fake_bot.send_message.assert_not_awaited()
-    callback.answer.assert_awaited_once()
+    callback.answer.assert_awaited_once()  # err.expired toast
 
 
-def test_pick_type_isolation_other_owner(monkeypatch) -> None:
+def test_pick_template_isolation_other_owner(monkeypatch) -> None:
     """User B picking must never reach user A's pending token."""
     attacker = SimpleNamespace(
         from_user=SimpleNamespace(id=99, username="b", first_name="B"),
-        data="pick:echo",
+        data="tmpl:quiz",
         answer=AsyncMock(),
     )
     pending = {42: "VICTIM_TOKEN"}
@@ -147,7 +224,7 @@ def test_pick_type_isolation_other_owner(monkeypatch) -> None:
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
     fake_bot = AsyncMock()
 
-    asyncio.run(on_pick_type(attacker, fake_bot))
+    asyncio.run(on_pick_template(attacker, fake_bot))
 
     provision.assert_not_awaited()
     fake_bot.send_message.assert_not_awaited()
@@ -155,20 +232,16 @@ def test_pick_type_isolation_other_owner(monkeypatch) -> None:
     assert pending == {42: "VICTIM_TOKEN"}  # untouched
 
 
-def test_pick_type_provision_failure_restores_token(monkeypatch) -> None:
+def test_pick_template_provision_failure_restores_token(monkeypatch) -> None:
     """On provisioning failure the token goes back to pending for a re-pick."""
-    callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="pick:hello",
-        answer=AsyncMock(),
-    )
+    callback = _callback("tmpl:quiz")
     pending = {42: "123456789:FAKE_TOKEN"}
     monkeypatch.setattr(main_router_module, "_PENDING", pending)
     provision = AsyncMock(side_effect=RuntimeError("db down"))
     monkeypatch.setattr("tme.routers.main_bot.provision_managed_bot", provision)
     fake_bot = AsyncMock()
 
-    asyncio.run(on_pick_type(callback, fake_bot))
+    asyncio.run(on_pick_template(callback, fake_bot))
 
     assert pending == {42: "123456789:FAKE_TOKEN"}  # restored for re-pick
     fake_bot.send_message.assert_awaited_once()

@@ -41,7 +41,7 @@ class TemplateSpec(BaseModel):
     Attributes:
         id: Slug identifying the template family (``^[a-z0-9_]{2,32}$`` —
             short enough to fit Telegram's 64-byte ``callback_data`` cap
-            behind the S2.2 ``pick:`` prefix).
+            behind the S2.2 ``tmpl:`` prefix).
         version: Seed revision, bumped on any seed change. A clone is a
             *copy*, so bumping never mutates already-cloned bots; the latest
             version wins for new clones.
