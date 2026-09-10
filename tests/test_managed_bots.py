@@ -15,9 +15,10 @@ from unittest.mock import AsyncMock
 from aiogram.exceptions import TelegramBadRequest
 
 from tme.config import settings
-from tme.database.models import BotType
+from tme.database.models import Bot as BotModel, BotType
 from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig
 import tme.services.managed_bots as svc
+from tme.templates import get_template
 
 TOKEN = "123456789:FAKE_TOKEN"
 # Derived from settings so the test matches whatever WEBHOOK_BASE_URL the
@@ -241,3 +242,111 @@ def test_provision_new_bot_primes_cache_with_type_default(monkeypatch) -> None:
     cfg = cached[0]
     assert isinstance(cfg, EchoBotConfig)
     assert cfg.echo_prefix == "🔁 "
+
+
+def test_provision_with_seed_honors_flow_type_and_stamp(monkeypatch) -> None:
+    """S2.2: a seed replaces the bare default; row type follows the seed.
+
+    Picking the quiz template must persist exactly its stamped generic flow
+    (``active_modules: ["steps"]`` + the S2.1 provenance rider) and set the
+    row's ``bot_type`` from the seed's own discriminator — never from the
+    call's ``bot_type`` default.
+    """
+    flows: list = []
+    added: list = []
+
+    class _Session:
+        async def execute(self, _statement):
+            # owner lookup → None (create), bot lookup → None (create).
+            return _FakeResult(None)
+
+        def add(self, obj):
+            added.append(obj)
+
+        async def flush(self):
+            if added and getattr(added[-1], "id", None) is None:
+                added[-1].id = 1  # mimic the real flush: assign the surrogate PK
+
+    @asynccontextmanager
+    async def scope():
+        yield _Session()
+
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(username="quizbot", full_name="Quiz Bot")
+
+    async def fake_set(_token, config):
+        flows.append(config)
+
+    monkeypatch.setattr(svc, "get_tenant_bot", lambda _token: bot)
+    monkeypatch.setattr(svc, "session_scope", scope)
+    monkeypatch.setattr(svc, "register_webhook", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, "set_bot_config", fake_set)
+
+    quiz_seed = get_template("quiz").seed  # the registry's stamped flow
+    asyncio.run(
+        svc.provision_managed_bot(
+            token=TOKEN,
+            owner_telegram_id=42,
+            seed=quiz_seed,  # bot_type deliberately left at its GENERIC default
+        )
+    )
+
+    # The persisted row's type comes from the seed's discriminator…
+    bot_row = next(o for o in added if isinstance(o, BotModel))
+    assert bot_row.bot_type is BotType.GENERIC
+    # …and the flow seeded into the row is exactly the template's stamped dump.
+    assert bot_row.config.flow == quiz_seed.model_dump()
+    assert bot_row.config.flow["template"] == {"id": "quiz", "version": 1}
+
+    # Cache primed with exactly what was persisted (parse of the row's flow).
+    assert len(flows) == 1
+    assert isinstance(flows[0], BotConfigSchema)
+    assert flows[0].active_modules == ["steps"]
+    assert flows[0].model_dump()["template"] == {"id": "quiz", "version": 1}
+
+
+def test_provision_seed_overrides_mismatched_bot_type_param(monkeypatch) -> None:
+    """A seed's discriminator wins even when ``bot_type`` contradicts it.
+
+    The controller handler passes no ``bot_type`` (generic default), but any
+    legacy caller that does pass one must not corrupt the row/flow invariant:
+    an echo seed on a hello ``bot_type`` persists an echo row.
+    """
+    added: list = []
+
+    class _Session:
+        async def execute(self, _statement):
+            return _FakeResult(None)
+
+        def add(self, obj):
+            added.append(obj)
+
+        async def flush(self):
+            if added and getattr(added[-1], "id", None) is None:
+                added[-1].id = 1
+
+    @asynccontextmanager
+    async def scope():
+        yield _Session()
+
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(username="echobot", full_name="Echo Bot")
+
+    monkeypatch.setattr(svc, "get_tenant_bot", lambda _token: bot)
+    monkeypatch.setattr(svc, "session_scope", scope)
+    monkeypatch.setattr(svc, "register_webhook", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, "set_bot_config", AsyncMock())
+
+    echo_seed = get_template("echo").seed
+    asyncio.run(
+        svc.provision_managed_bot(
+            token=TOKEN,
+            owner_telegram_id=42,
+            bot_type=BotType.HELLO,  # contradicts the seed on purpose
+            seed=echo_seed,
+        )
+    )
+
+    bot_row = next(o for o in added if isinstance(o, BotModel))
+    assert bot_row.bot_type is BotType.ECHO  # the seed wins
+    assert bot_row.config.flow["bot_type"] == "echo"

@@ -91,6 +91,7 @@ async def provision_managed_bot(
     owner_username: str | None = None,
     owner_first_name: str | None = None,
     bot_type: BotType = BotType.GENERIC,
+    seed: BotConfigUnion | None = None,
 ) -> BotModel:
     """Persist a newly-created tenant bot and make it live.
 
@@ -99,6 +100,14 @@ async def provision_managed_bot(
     Idempotent on ``token`` (re-provisioning an existing token updates it in
     place). ``bot_type`` selects the config variant; the default is a generic
     tenant bot.
+
+    S2.2: ``seed`` is the template's flow (``TemplateSpec.seed`` via
+    :func:`tme.templates.get_template`). When provided it **replaces** the
+    bare per-type default entirely — and the row's ``bot_type`` is taken from
+    the seed's own discriminator (never from ``bot_type``), keeping the
+    row/flow invariant a template cannot violate. ``seed=None`` (API/legacy
+    callers) keeps today's ``_default_config_for(bot_type)`` behaviour;
+    ``_default_config_for`` stays until S2.3 collapses the two sources.
     """
     tenant_bot = get_tenant_bot(token)
 
@@ -112,7 +121,10 @@ async def provision_managed_bot(
         logger.warning("getMe failed for new bot …%s: %s", token[-6:], exc)
 
     telegram_bot_id = int(token.split(":", 1)[0])
-    default_config = _default_config_for(bot_type)
+    # The seed carries its own bot_type discriminator — the row must agree
+    # with the flow it persists (same invariant the registry stamps at source).
+    effective_type = seed.bot_type if seed is not None else bot_type
+    default_config = seed if seed is not None else _default_config_for(bot_type)
 
     async with session_scope() as session:
         owner = await _upsert_owner(
@@ -139,7 +151,7 @@ async def provision_managed_bot(
                 title=title,
                 owner_id=owner.id,
                 is_active=True,
-                bot_type=bot_type,
+                bot_type=effective_type,
             )
             bot_row.config = BotConfig(flow=default_config.model_dump())
             session.add(bot_row)

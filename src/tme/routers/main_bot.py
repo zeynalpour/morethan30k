@@ -40,7 +40,8 @@ from tme.config import settings
 from tme.core.i18n import effective_language
 from tme.core.logging import get_logger
 from tme.core.main_i18n import MAIN_BOT_STRINGS, supported_languages, tr
-from tme.database.models import Bot as BotModel, BotType
+from tme.database.models import Bot as BotModel
+from tme.schemas.bot_config import BotConfigUnion
 from tme.services.dashboard import list_bots_for_owner
 from tme.services.managed_bots import provision_managed_bot
 from tme.services.user_language import (
@@ -48,6 +49,7 @@ from tme.services.user_language import (
     get_user_language,
     set_user_language,
 )
+from tme.templates import TemplateSpec, get_template, list_templates
 
 logger = get_logger(__name__)
 
@@ -56,19 +58,25 @@ main_router = Router(name="main_controller")
 _CREATE_BOT = "create_bot"
 _LANG_PREFIX = "lang:"
 
-# --- Managed-bot type picker -------------------------------------------------
-# Callback-data suffix → (string key, tenant behaviour type). Both the
-# picker keyboard and the callback handler derive from this single source so
-# they can never drift when a new type is added.
-_PICK_PREFIX = "pick:"
-_TYPE_CHOICES: dict[str, tuple[str, BotType]] = {
-    "generic": ("btn.type_generic", BotType.GENERIC),
-    "hello": ("btn.type_hello", BotType.HELLO),
-    "echo": ("btn.type_echo", BotType.ECHO),
-}
+# --- Managed-bot template picker ----------------------------------------------
+# Phase 2 S2.2: the creation flow's front door is the template gallery. Both
+# the picker keyboard and the callback handler derive from the S2.1 registry
+# (`list_templates()`), the same single-source pattern `_TYPE_CHOICES` had —
+# so adding a template = adding a `TemplateSpec` constant + one `tmpl.{id}`
+# copy key per language. No handler edit (data-only picker).
+#
+# Callback data is `tmpl:{template_id}` — the version is deliberately NOT in
+# the callback: a fresh creation always takes `list_templates()` = latest.
+# Template ids are `^[a-z0-9_]{2,32}$`, so the payload stays far below
+# Telegram's 64-byte `callback_data` cap.
+_TMPL_PREFIX = "tmpl:"
+#: Reserved callback value for the expert path — a plain generic starter with
+#: today's bare default (no template, no provenance stamp). Deliberately not
+#: a registry id: "start from scratch" must never appear in `list_templates()`.
+_SCRATCH_ID = "scratch"
 
-#: Tokens of freshly-created managed bots awaiting their owner's type choice,
-#: keyed by owner Telegram id. In-memory on purpose (single-process gateway);
+#: Tokens of freshly-created managed bots awaiting their owner's template
+#: choice, keyed by owner Telegram id. In-memory on purpose (single-process gateway);
 #: a restart drops pendings harmlessly — the unprovisioned bot simply never
 #: gets a webhook until recreated. A second creation while one is pending
 #: replaces the first (the abandoned bot stays unprovisioned).
@@ -142,19 +150,45 @@ def _create_bot_keyboard(language_code: str | None = None) -> ReplyKeyboardMarku
     )
 
 
-def _type_picker_keyboard(language_code: str | None = None) -> InlineKeyboardMarkup:
-    """Inline keyboard offering the tenant behaviour types (from _TYPE_CHOICES)."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=tr(language_code, display_key),
-                    callback_data=f"{_PICK_PREFIX}{label}",
-                )
-                for label, (display_key, _) in _TYPE_CHOICES.items()
-            ]
+def _template_button(
+    language_code: str | None,
+    spec: TemplateSpec,
+) -> InlineKeyboardButton:
+    """One picker card: localized label (registry display_name as fallback).
+
+    ``tr()`` already falls back to English for untranslated controller
+    languages; the ``display_name`` fallback covers a template registered
+    before its ``tmpl.{id}`` copy key landed — the picker must never crash
+    over a missing string.
+    """
+    try:
+        label = tr(language_code, f"tmpl.{spec.id}")
+    except KeyError:
+        label = spec.display_name
+    return InlineKeyboardButton(
+        text=label,
+        callback_data=f"{_TMPL_PREFIX}{spec.id}",
+    )
+
+
+def _template_picker_keyboard(language_code: str | None = None) -> InlineKeyboardMarkup:
+    """Inline keyboard offering one card per registry template + scratch.
+
+    Data-only: derived from ``list_templates()`` (registration order), so a
+    new ``TemplateSpec`` constant appears here without a handler edit. The
+    trailing "start from scratch" card preserves today's bare generic default
+    for experts — the Hello World / Echo cards subsume the old type buttons.
+    """
+    rows = [[_template_button(language_code, spec)] for spec in list_templates()]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=tr(language_code, "tmpl.scratch"),
+                callback_data=f"{_TMPL_PREFIX}{_SCRATCH_ID}",
+            )
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _language_keyboard() -> InlineKeyboardMarkup:
@@ -233,19 +267,27 @@ async def on_managed_bot(
         )
         return
 
-    # Hold the token until the owner picks a behaviour type; the picker's
+    # Hold the token until the owner picks a template; the picker's
     # callback handler does the actual provisioning.
     _PENDING[owner_id] = token
     await bot.send_message(
         chat_id=owner_id,
         text=tr(language, "bot_ready"),
-        reply_markup=_type_picker_keyboard(language),
+        reply_markup=_template_picker_keyboard(language),
     )
 
 
-@main_router.callback_query(F.data.startswith(_PICK_PREFIX))
-async def on_pick_type(callback: CallbackQuery, bot: Bot, language_code: str | None = None) -> None:
-    """Provision the pending managed bot with the owner's chosen type."""
+@main_router.callback_query(F.data.startswith(_TMPL_PREFIX))
+async def on_pick_template(
+    callback: CallbackQuery, bot: Bot, language_code: str | None = None
+) -> None:
+    """Provision the pending managed bot from the owner's chosen card.
+
+    ``tmpl:{id}`` resolves the registry's latest version (fresh creations
+    never pin — the callback deliberately carries no version). The reserved
+    ``tmpl:scratch`` card provisions today's bare generic default, preserving
+    the pre-Phase-2 no-template path exactly.
+    """
     if callback.from_user is None:
         with suppress(TelegramBadRequest):
             await callback.answer(tr(language_code, "err.generic"))
@@ -254,13 +296,22 @@ async def on_pick_type(callback: CallbackQuery, bot: Bot, language_code: str | N
     # The router filter guarantees a non-empty data, but the model types it
     # optional — normalize for the type checker.
     raw = callback.data or ""
-    choice = _TYPE_CHOICES.get(raw.removeprefix(_PICK_PREFIX))
-    if choice is None:
-        with suppress(TelegramBadRequest):
-            await callback.answer(tr(language_code, "err.unknown_type"))
-        return
+    template_id = raw.removeprefix(_TMPL_PREFIX)
 
-    _, bot_type = choice
+    seed: BotConfigUnion | None
+    if template_id == _SCRATCH_ID:
+        seed = None  # start from scratch → today's bare per-type default
+    else:
+        try:
+            spec = get_template(template_id)  # latest version (never pinned)
+        except KeyError:
+            # Unknown/stale id (registry edit, deleted template, forged
+            # callback) — answer gracefully, keep the token pending.
+            with suppress(TelegramBadRequest):
+                await callback.answer(tr(language_code, "err.unknown_template"))
+            return
+        seed = spec.seed
+
     token = _PENDING.pop(callback.from_user.id, None)
     if token is None:
         with suppress(TelegramBadRequest):
@@ -270,12 +321,15 @@ async def on_pick_type(callback: CallbackQuery, bot: Bot, language_code: str | N
     with suppress(TelegramBadRequest):
         await callback.answer()
     try:
+        # `bot_type` stays at its GENERIC default: with a seed, the row's
+        # type comes from the seed's own discriminator (invariant held in
+        # provision_managed_bot); scratch keeps today's generic default.
         bot_row = await provision_managed_bot(
             token=token,
             owner_telegram_id=callback.from_user.id,
             owner_username=callback.from_user.username,
             owner_first_name=callback.from_user.first_name,
-            bot_type=bot_type,
+            seed=seed,
         )
     except Exception:
         logger.exception("provision_managed_bot failed for owner=%s", callback.from_user.id)

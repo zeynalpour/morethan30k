@@ -25,9 +25,12 @@ MAIN_BOT_STRINGS: dict[str, dict[str, str]] = {
         "btn.my_bots": "🤖 My Bots",
         "btn.open_dashboard": "🚀 Open Dashboard",
         "btn.open_settings": "⚙️ Open Settings",
-        "btn.type_generic": "🧩 Generic",
-        "btn.type_hello": "👋 Hello",
-        "btn.type_echo": "🔁 Echo",
+        "tmpl.hello_world": "👋 Hello World",
+        "tmpl.echo": "🔁 Echo",
+        "tmpl.feedback_collector": "📣 Feedback Collector",
+        "tmpl.quiz": "🧠 Quiz",
+        "tmpl.simple_form": "📝 Simple Form",
+        "tmpl.scratch": "✨ Start from Scratch",
         "start.welcome": (
             "👋 Hi {name}! Welcome to TME.\n\nTap the button below to create your own Telegram bot."
         ),
@@ -44,7 +47,7 @@ MAIN_BOT_STRINGS: dict[str, dict[str, str]] = {
         ),
         "bot_ready": ("🤖 Your new bot is ready!\n\nPick its behaviour — you can change it later:"),
         "err.generic": "Something went wrong — please try again.",
-        "err.unknown_type": "Unknown bot type.",
+        "err.unknown_template": "Unknown template — please pick again.",
         "err.expired": "That request expired — tap “Create a Managed Bot” again.",
         "err.provision": (
             "❌ Something went wrong while wiring up your bot. "
@@ -75,9 +78,12 @@ MAIN_BOT_STRINGS: dict[str, dict[str, str]] = {
         "btn.my_bots": "🤖 ربات‌های من",
         "btn.open_dashboard": "🚀 باز کردن داشبورد",
         "btn.open_settings": "⚙️ باز کردن تنظیمات",
-        "btn.type_generic": "🧩 عمومی",
-        "btn.type_hello": "👋 سلام",
-        "btn.type_echo": "🔁 تکرار",
+        "tmpl.hello_world": "👋 سلام (Hello World)",
+        "tmpl.echo": "🔁 تکرار (Echo)",
+        "tmpl.feedback_collector": "📣 جمع‌آوری بازخورد",
+        "tmpl.quiz": "🧠 کوییز",
+        "tmpl.simple_form": "📝 فرم ساده",
+        "tmpl.scratch": "✨ از صفر شروع کن",
         "start.welcome": (
             "👋 سلام {name}! به TME خوش آمدی.\n\nبرای ساخت ربات تلگرامی خودت روی دکمه زیر بزن."
         ),
@@ -96,7 +102,7 @@ MAIN_BOT_STRINGS: dict[str, dict[str, str]] = {
             "🤖 ربات جدیدت آماده است!\n\nنوع رفتارش را انتخاب کن — بعداً هم می‌توانی عوضش کنی:"
         ),
         "err.generic": "مشکلی پیش آمد — دوباره تلاش کن.",
-        "err.unknown_type": "نوع ربات ناشناخته است.",
+        "err.unknown_template": "قالب ناشناخته — دوباره انتخاب کن.",
         "err.expired": ("آن درخواست منقضی شد — دوباره روی «ساخت ربات مدیریت‌شده» بزن."),
         "err.provision": (
             "❌ هنگام راه‌اندازی رباتت مشکلی پیش آمد. "

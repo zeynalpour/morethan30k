@@ -17,8 +17,9 @@ from tme.routers.main_bot import (
     on_language_command,
     on_language_pick,
     on_managed_bot,
-    on_pick_type,
+    on_pick_template,
 )
+from tme.templates import list_templates
 
 
 def _make_event(language_code: str | None = None) -> ManagedBotUpdated:
@@ -67,13 +68,20 @@ def test_managed_bot_speaks_owner_language(monkeypatch) -> None:
     send_kwargs = fake_bot.send_message.await_args.kwargs
     assert "ربات جدیدت آماده است" in send_kwargs["text"]
     labels = [b.text for row in send_kwargs["reply_markup"].inline_keyboard for b in row]
-    assert labels == ["🧩 عمومی", "👋 سلام", "🔁 تکرار"]
+    assert labels == [
+        "👋 سلام (Hello World)",
+        "🔁 تکرار (Echo)",
+        "📣 جمع‌آوری بازخورد",
+        "🧠 کوییز",
+        "📝 فرم ساده",
+        "✨ از صفر شروع کن",
+    ]
 
 
-def test_pick_type_confirm_in_owner_language(monkeypatch) -> None:
+def test_pick_template_confirm_in_owner_language(monkeypatch) -> None:
     callback = SimpleNamespace(
         from_user=SimpleNamespace(id=42, username="owner_user", first_name="Owner"),
-        data="pick:echo",
+        data="tmpl:echo",
         answer=AsyncMock(),
     )
     monkeypatch.setattr(module, "_PENDING", {42: "123456789:FAKE_TOKEN"})
@@ -83,12 +91,26 @@ def test_pick_type_confirm_in_owner_language(monkeypatch) -> None:
     )
     fake_bot = AsyncMock()
 
-    asyncio.run(on_pick_type(callback, fake_bot, language_code="fa"))
+    asyncio.run(on_pick_template(callback, fake_bot, language_code="fa"))
 
     text = fake_bot.send_message.await_args.kwargs["text"]
     assert "ساخته شد" in text and "@echo_bot" in text
     button = fake_bot.send_message.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.text == "⚙️ باز کردن تنظیمات"
+
+
+def test_every_template_has_a_copy_key_in_every_language() -> None:
+    """Every registry template id must have a ``tmpl.{id}`` key in en + fa.
+
+    The picker renders ``tr(language_code, f"tmpl.{spec.id}")`` — the drift
+    test above already pins en/fa key parity; this pins the registry → copy
+    coupling so a new template cannot ship without its controller cards.
+    """
+    for spec in list_templates():
+        for code in MAIN_BOT_STRINGS:
+            assert f"tmpl.{spec.id}" in MAIN_BOT_STRINGS[code], (
+                f"template {spec.id!r} has no tmpl.* card in {code!r}"
+            )
 
 
 def test_language_command_sends_picker() -> None:
