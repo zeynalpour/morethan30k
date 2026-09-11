@@ -46,6 +46,9 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       # Dummy app config so settings load; the DB/Redis URLs point at services.
+      # APP_ENV=test → the dev-only Telegram userbot E2E module skips in CI
+      # (it needs real userbot credentials that only exist on the dev box).
+      APP_ENV: "test"
       MAIN_BOT_TOKEN: "123456:CI-DUMMY-TOKEN"
       WEBHOOK_BASE_URL: "https://ci.example.com"
       WEBHOOK_SECRET: "ci-secret-0123456789"
