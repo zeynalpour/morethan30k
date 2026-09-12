@@ -40,6 +40,23 @@ export interface BotConfigFlow {
   echo_prefix?: string;
   translations?: Record<string, Translation>;
   single_language?: boolean;
+  template?: { id: string; version: number };
+}
+
+// S2.3 — a registry template card (latest version, no seed data).
+export interface TemplateSummary {
+  id: string;
+  version: number;
+  bot_type: string;
+  display_name: string;
+  description: string;
+}
+
+// S2.3 — a bot's template lineage + "update available" badge (pure read).
+export interface TemplateProvenance {
+  current: { id: string; version: number } | null;
+  latest_version: number | null;
+  update_available: boolean;
 }
 
 export interface BotConfigRow {
@@ -94,6 +111,18 @@ export const api = {
     request<BotRow>(`/api/bots/${botId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    }),
+  // S2.3 — template registry + re-clone ("Reset to template").
+  listTemplates: () => request<TemplateSummary[]>("/api/templates"),
+  getBotTemplate: (botId: number) =>
+    request<TemplateProvenance>(`/api/bots/${botId}/template`),
+  recloneTemplate: (
+    botId: number,
+    body: { template_id: string; version?: number; preserve?: string[] }
+  ) =>
+    request<BotRow>(`/api/bots/${botId}/reclone`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 };
 

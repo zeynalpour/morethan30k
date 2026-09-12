@@ -211,6 +211,35 @@ export default function App() {
     })();
   }, []);
 
+  // S2.3: a re-clone replaced the flow server-side — reload it so the editor
+  // shows the new base copy (translations/single_language were preserved by
+  // the backend's whitelist, but the base fields all changed).
+  const handleRecloned = useCallback(async () => {
+    if (!bot) return;
+    haptic("medium");
+    try {
+      const [updated, flow] = await Promise.all([
+        api.getBot(bot.id),
+        api.getConfig(bot.id),
+      ]);
+      setBot(updated);
+      setConfig(wrapConfig(updated, flow));
+      showToast("Bot reset to template — translations kept");
+      haptic("light");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to reload configuration", "error");
+      haptic("heavy");
+    }
+  }, [bot, showToast, haptic]);
+
+  const handlePanelError = useCallback(
+    (msg: string) => {
+      showToast(msg, "error");
+      haptic("heavy");
+    },
+    [showToast, haptic]
+  );
+
   useEffect(() => {
     const tg = window.Telegram?.WebApp;
     if (!tg) return;
@@ -256,6 +285,8 @@ export default function App() {
             bot={bot}
             onSave={handleSaveConfig}
             onTypeChange={handleTypeChange}
+            onRecloned={handleRecloned}
+            onPanelError={handlePanelError}
             onShowBots={() => {
               haptic("light");
               loadBots();

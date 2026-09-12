@@ -22,7 +22,13 @@ from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotType, User
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.auth import validate_telegram_init_data
-from tme.services.managed_bots import _default_config_for
+from tme.services.managed_bots import _default_config_for, reclone_bot
+from tme.templates import (
+    get_template,
+    list_templates,
+    stamp_of,
+    template_updates,
+)
 
 logger = get_logger(__name__)
 
@@ -55,6 +61,46 @@ class BotUpdate(BaseModel):
 
     is_active: bool | None = None
     bot_type: BotType | None = None
+
+
+class TemplateSummary(BaseModel):
+    """One registry template as the dashboard picker sees it (no seed data)."""
+
+    id: str
+    version: int
+    bot_type: str
+    display_name: str
+    description: str
+
+
+class TemplateProvenance(BaseModel):
+    """A bot's template lineage + whether the registry has moved on (S2.3).
+
+    ``current`` is the stamp pinned in the flow (``null`` for scratch and
+    pre-Phase-2 bots — they can still adopt via ``POST .../reclone``).
+    ``latest_version`` is the registry's newest version of that same id
+    (``null`` when there is no current template). ``update_available`` is a
+    pure badge: bumping a template never mutates live bots — every re-clone
+    is an explicit, confirmed owner action.
+    """
+
+    current: dict | None
+    latest_version: int | None
+    update_available: bool
+
+
+class RecloneRequest(BaseModel):
+    """Body of ``POST /api/bots/{id}/reclone`` — the explicit owner reset.
+
+    ``template_id``/``version`` select the seed (version ``None`` = latest);
+    ``preserve`` whitelists which owner keys survive the reset
+    (``translations`` + ``single_language`` — default BOTH, per the Phase 2
+    invariant that the i18n layer is the owner's, never the template's).
+    """
+
+    template_id: str
+    version: int | None = None
+    preserve: list[str] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +241,12 @@ async def update_bot(
         if payload.bot_type is not None and payload.bot_type != bot.bot_type:
             bot.bot_type = payload.bot_type
             if bot.config is not None:
+                # A hand reset clears the lineage: the bare per-type default
+                # is not the stamped seed the owner cloned, so the dashboard
+                # must stop advertising "update available" for a flow the
+                # template no longer describes (Architect's S2.3 gotcha —
+                # _default_config_for emits NO stamp, so this is a wipe by
+                # construction, not a conditional one).
                 bot.config.flow = _default_config_for(payload.bot_type).model_dump()
         if payload.is_active is not None:
             bot.is_active = payload.is_active
@@ -208,6 +260,128 @@ async def update_bot(
         bot_id,
         auth,
         summary.is_active,
+        summary.bot_type,
+    )
+    return summary
+
+
+# --------------------------------------------------------------------------- #
+# Templates (S2.3 — versioned templates + re-clone into existing bots)
+# --------------------------------------------------------------------------- #
+@router.get("/templates", response_model=list[TemplateSummary])
+async def list_available_templates(auth: int = Depends(_require_auth)) -> list[TemplateSummary]:
+    """Every registry template's latest version, in registration order.
+
+    Serialized straight from :func:`tme.templates.list_templates` — the
+    registry stays the single source; no duplicated list in the frontend.
+    initData-auth'd like every ``/api`` route (owners only; templates are
+    not public data).
+    """
+    return [
+        TemplateSummary(
+            id=spec.id,
+            version=spec.version,
+            bot_type=spec.bot_type.value,
+            display_name=spec.display_name,
+            description=spec.description,
+        )
+        for spec in list_templates()
+    ]
+
+
+@router.get("/bots/{bot_id}/template", response_model=TemplateProvenance)
+async def get_bot_template(bot_id: int, auth: int = Depends(_require_auth)) -> TemplateProvenance:
+    """The bot's template provenance + the "update available" badge.
+
+    A pure read of the flow's stamp against the registry. Scratch and
+    pre-Phase-2 bots answer ``current: null`` — they can still adopt any
+    template through ``POST /api/bots/{id}/reclone``.
+    """
+    async with session_scope() as session:
+        bot = await _load_owned_bot(session, bot_id, auth)
+    if bot is None or bot.config is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    flow = bot.config.flow
+    current = stamp_of(flow) if isinstance(flow, dict) else None
+    if current is not None:
+        try:
+            latest_version: int | None = get_template(current["id"]).version
+        except KeyError:
+            latest_version = None  # template since deleted from the registry
+    else:
+        latest_version = None
+    update = template_updates(flow) is not None
+    return TemplateProvenance(
+        current=current,
+        latest_version=latest_version,
+        update_available=update,
+    )
+
+
+@router.post("/bots/{bot_id}/reclone", response_model=BotSummary)
+async def reclone_from_template(
+    bot_id: int,
+    payload: RecloneRequest,
+    auth: int = Depends(_require_auth),
+) -> BotSummary:
+    """Reset the bot's base flow to a template seed — the explicit owner action.
+
+    No silent auto-updates: this is the ONLY path a template version enters
+    an existing bot. The seed replaces the base copy wholesale
+    (validated through the union first); ``translations`` and
+    ``single_language`` carry over from the old flow (whitelisted
+    ``preserve``); the stamp moves to the applied version. Cross-type
+    re-clones are refused (422) — Phase 2 keeps re-clone same-``bot_type``
+    only, the Architect's simpler option; adopting a template of the bot's
+    OWN type is the adoption path for scratch/legacy bots. The write and the
+    cache invalidation belong to :func:`tme.services.managed_bots.reclone_bot`
+    — this route only authenticates, scopes, guards and serializes.
+    """
+    try:
+        spec = get_template(payload.template_id, version=payload.version)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "unknown template", "template_id": payload.template_id},
+        ) from None
+
+    async with session_scope() as session:
+        bot = await _load_owned_bot(session, bot_id, auth)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        if spec.bot_type != bot.bot_type:
+            # Same-bot_type only in Phase 2 (Architect's recommendation):
+            # re-clone is a reset of THIS kind of bot, not a type switch.
+            # The type switch keeps its own path (PATCH /api/bots/{id}).
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "template bot_type mismatch",
+                    "template_bot_type": spec.bot_type.value,
+                    "bot_bot_type": (
+                        bot.bot_type.value if hasattr(bot.bot_type, "value") else str(bot.bot_type)
+                    ),
+                },
+            )
+
+    # The service owns the write AND the cache invalidation (same contract as
+    # provisioning): the rebuilt flow is persisted in its own session, then
+    # the Redis key is dropped so the next request read-throughs Postgres.
+    # Ordering matters: a rejected whitelist never touches the row or the
+    # live cache entry.
+    try:
+        bot = await reclone_bot(bot, spec, preserve=payload.preserve)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+
+    summary = _summarize(bot)
+    logger.info(
+        "Re-cloned bot id=%s (owner tg=%s) to template %s v%s (type=%s)",
+        bot_id,
+        auth,
+        spec.id,
+        spec.version,
         summary.bot_type,
     )
     return summary
