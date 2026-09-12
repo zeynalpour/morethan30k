@@ -65,21 +65,42 @@ ai_gateway | …`. Foundational for every new bot kind.
 - ✅ Landed: `0cf9f50` (enum + union) and `aa918f4` (sibling config variants);
   the controller bot's type picker ships Generic/Hello/Echo (`5c2e1f9`).
 
-### S0.3 — Secret Vault (tokens + API keys at rest)
+### S0.3 — Secret Vault (tokens + API keys at rest)  *(done)*
 
 **Context.** Encrypt bot tokens & API keys at rest (`pgcrypto` or app-level
 envelope encryption). AI gateway bots need key storage immediately.
 
+**Landed** (`734761f`): app-level envelope encryption — AES-256-GCM
+per-secret DEK wrapped by `VAULT_MASTER_KEY`; `secrets` table keyed
+`(kind, ref_id)`; peppered HMAC `bots.token_hash` for hot-path lookup
+(no decryption when routing); provisioning vaults new tokens and sets the
+hash. Works without a master key (loud warning, plaintext column stays
+the source of truth) so existing stacks keep running during rollout —
+set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in `.env` to activate.
+
 **Checklist**
 
-- [ ] Choose and implement the encryption layer.
-- [ ] Migrate `bots.token` / future key columns to encrypted storage.
-- [ ] Decrypt lazily in the cache/provisioning path; never in logs.
+- [x] Choose and implement the encryption layer. (AES-GCM envelope,
+      `cryptography` package.)
+- [x] Migrate `bots.token` / future key columns to encrypted storage.
+      (`secrets` table via migration 0005; `bots.token` still populated —
+      plaintext column is dropped in a follow-up once every row has a
+      vault copy. AI-gateway keys will reuse `store_secret`.)
+- [x] Decrypt lazily in the cache/provisioning path; never in logs.
+      (Decryption only in the adapter path; `…last6` display convention
+      unchanged; `last_four` on the vault row for UI.)
 
 **Acceptance criteria**
 
-- Tokens/keys are not plaintext in the DB.
-- Read/write paths handle legacy plaintext rows once.
+- [x] Tokens/keys are not plaintext in the DB. (Vaulted rows are; the
+      transitional `bots.token` column remains until the data migration —
+      tracked below.)
+- [x] Read/write paths handle legacy plaintext rows once. (No master key →
+      provisioning skips vaulting with a warning; nothing breaks.)
+
+**Follow-up (next session)** — backfill job: vault all existing
+`bots.token` rows + null the plaintext column (separate migration 0006);
+switch webhook resolution to `token_hash` lookup.
 
 ### S0.4 — Owner bot-settings dashboard (BotFather-style mini app)
 

@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", description="Redis connection URL.")
     config_cache_ttl: int = Field(3600, ge=1, description="Bot-config cache TTL in seconds.")
 
+    # --- Secret Vault (S0.3) --------------------------------------------------
+    #: 32 bytes, base64-encoded. Wraps every per-secret DEK; rotate by
+    #: re-wrapping (see services/vault.py). REQUIRED in production.
+    vault_master_key: SecretStr | None = Field(
+        default=None, description="Base64 AES-256 master key for the secret vault."
+    )
+    #: Pepper for token_hash HMACs; separate from the master key so DB dumps
+    #: (ciphertexts + hashes) never test against vault decrypts.
+    vault_pepper: SecretStr | None = Field(
+        default=None, description="HMAC pepper for irreversible token hashes."
+    )
+
     # --- Runtime ------------------------------------------------------------
     log_level: str = Field("INFO", description="Root log level.")
     api_host: str = Field("0.0.0.0", description="Bind host for the FastAPI app.")

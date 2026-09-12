@@ -47,9 +47,10 @@ as work progresses; PRs should reference the phase they belong to.
   Supabase writes were rejected: they cannot invalidate the Redis config
   cache, would expose `bots.token` to the browser, and split the source of
   truth.
-- ⚪ **Secret Vault** — encrypt bot tokens & API keys at rest (e.g. `pgcrypto`
-  or app-level envelope encryption) from day one. AI gateway bots need key
-  storage immediately. 💡
+- ⚪ **Secret Vault** — encrypt bot tokens & API keys at rest from day one.
+  AI gateway bots need key storage immediately. 🟢 *(S0.3 landed: AES-GCM
+  envelope + `secrets` table + `bots.token_hash` hot-path routing; rollout
+  gradual — active once `VAULT_MASTER_KEY` is set, backfill job pending.)*
 
 ---
 
