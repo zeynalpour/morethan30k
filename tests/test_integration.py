@@ -44,13 +44,18 @@ from tme.database.models import Bot as BotModel, BotType
 from tme.services import user_language as user_language_module
 from tme.services.managed_bots import provision_managed_bot
 from tme.services.user_language import get_user_language, set_user_language
+from tme.templates import get_template
 
 REPO = Path(__file__).resolve().parents[1]
 ADMIN_URL = "postgresql://tme:tme@localhost:5432/tme"
 TEST_DB_URL = "postgresql+asyncpg://tme:tme@localhost:5432/tme_test"
 TEST_REDIS_URL = "redis://localhost:6379/15"
 OWNER_TG_ID = 424242
-FAKE_TOKEN = "987654321:AAH4sFakeFakeFakeFakeFakeFakeFakeFakeFake"
+FAKE_TOKEN = "987654321:AAH4sFakeFakeFakeFakeFakeFakeFakeFakeFakeFake"
+#: A second token for tests that need a fresh row — the shared module-scoped
+#: stack provisions idempotently ON TOKEN, so reusing FAKE_TOKEN would
+#: inherit an earlier test's bot_type/config.
+FRESH_TOKEN = "112233445:AAH4sFakeFakeFakeFakeFakeFakeFakeFakeFakeFake"
 
 _T = TypeVar("_T")
 Run = Callable[[Awaitable[_T]], _T]
@@ -260,3 +265,112 @@ def test_user_language_preference_round_trip(test_stack) -> None:
     assert test_stack(get_user_language(tg_id)) is None
     test_stack(set_user_language(tg_id, "fa"))
     assert test_stack(get_user_language(tg_id)) == "fa"
+
+
+def test_reclone_end_to_end_through_cache(test_stack, monkeypatch) -> None:
+    """S2.3 end-to-end: provision from a template → owner customizes →
+    re-clone → the runtime serves the fresh seed + kept owner layer.
+
+    Exercises every layer for real: the registry seed, the signed-initData
+    owner scope, the persist-then-invalidate cache path, and the Phase 1
+    localize chain over the preserved translations.
+    """
+    # A hello bot cloned from hello_world v1 (the S2.2 picker path).
+    monkeypatch.setattr("tme.services.managed_bots.register_webhook", AsyncMock(return_value=False))
+    bot_row = test_stack(
+        provision_managed_bot(
+            token=FRESH_TOKEN,
+            owner_telegram_id=OWNER_TG_ID,
+            seed=get_template("hello_world").seed,
+        )
+    )
+    assert bot_row.bot_type is BotType.HELLO
+
+    # The owner edits the base copy + adds a translation (the dashboard path).
+    edited = get_template("hello_world").seed.model_dump()
+    edited["greeting"] = "OWNER EDIT"
+    edited["translations"] = {"fa": {"greeting": "سلام ویرایش"}}
+    edited["single_language"] = False  # translations visible while editing
+    patch = test_stack(
+        _api(
+            "PATCH",
+            f"/api/bots/{bot_row.id}/config",
+            json={"flow": edited},
+            headers=_auth_headers(),
+        )
+    )
+    assert patch.status_code == 200
+    live = test_stack(cache_module.get_bot_config(FRESH_TOKEN))
+    assert live is not None
+    assert live.greeting == "OWNER EDIT"
+    assert localize(live, "fa").greeting == "سلام ویرایش"  # owner layer live
+
+    # Now the owner locks single-language mode and re-clones: the mode must
+    # survive the reset (single_language is the OWNER's, never the seed's).
+    edited["single_language"] = True
+    lock = test_stack(
+        _api(
+            "PATCH",
+            f"/api/bots/{bot_row.id}/config",
+            json={"flow": edited},
+            headers=_auth_headers(),
+        )
+    )
+    assert lock.status_code == 200
+
+    # Provenance reads back through the API.
+    prov = test_stack(_api("GET", f"/api/bots/{bot_row.id}/template", headers=_auth_headers()))
+    assert prov.status_code == 200
+    assert prov.json()["current"] == {"id": "hello_world", "version": 1}
+    assert prov.json()["update_available"] is False  # registry not ahead of v1
+
+    # The explicit owner action: reset to the template's latest seed.
+    reclone = test_stack(
+        _api(
+            "POST",
+            f"/api/bots/{bot_row.id}/reclone",
+            json={"template_id": "hello_world"},
+            headers=_auth_headers(),
+        )
+    )
+    assert reclone.status_code == 200
+    assert reclone.json()["bot_type"] == "hello"
+
+    # The runtime reads the RESET flow through the invalidated cache: fresh
+    # seed copy, owner translations + single_language preserved, new stamp.
+    live = test_stack(cache_module.get_bot_config(FRESH_TOKEN))
+    assert live is not None
+    assert live.greeting == "Hello there! 👋"  # owner edit replaced
+    assert live.single_language is True  # owner mode survived
+    # The kept translation is IN the flow (single-language mode mutes the
+    # localize chain by design — Phase 1 — so assert on the stored layer).
+    assert live.translations["fa"].greeting == "سلام ویرایش"
+    # Un-lock the mode: the preserved translation immediately localizes.
+    flow = live.model_dump()
+    flow["single_language"] = False
+    unlock = test_stack(
+        _api(
+            "PATCH",
+            f"/api/bots/{bot_row.id}/config",
+            json={"flow": flow},
+            headers=_auth_headers(),
+        )
+    )
+    assert unlock.status_code == 200
+    live2 = test_stack(cache_module.get_bot_config(FRESH_TOKEN))
+    assert live2 is not None
+    assert localize(live2, "fa").greeting == "سلام ویرایش"  # owner layer intact
+
+    cfg = test_stack(_api("GET", f"/api/bots/{bot_row.id}/config", headers=_auth_headers()))
+    assert cfg.json()["template"] == {"id": "hello_world", "version": 1}
+
+    # Another owner's scope: the re-clone route is 404 for a stranger.
+    stranger = test_stack(
+        _api(
+            "POST",
+            f"/api/bots/{bot_row.id}/reclone",
+            json={"template_id": "hello_world"},
+            headers={"X-Telegram-Init-Data": _sign_init_data(user_id=999)},
+        )
+    )
+    assert stranger.status_code == 404

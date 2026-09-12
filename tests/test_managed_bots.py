@@ -13,9 +13,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
+import pytest
 
 from tme.config import settings
-from tme.database.models import Bot as BotModel, BotType
+from tme.database.models import Bot as BotModel, BotConfig, BotType
 from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig
 import tme.services.managed_bots as svc
 from tme.templates import get_template
@@ -350,3 +351,159 @@ def test_provision_seed_overrides_mismatched_bot_type_param(monkeypatch) -> None
     bot_row = next(o for o in added if isinstance(o, BotModel))
     assert bot_row.bot_type is BotType.ECHO  # the seed wins
     assert bot_row.config.flow["bot_type"] == "echo"
+
+
+# ============================================================== S2.3 re-clone
+def _hello_bot_row(flow: dict) -> BotModel:
+    """A persisted-shape HELLO bot row carrying ``flow`` (a clone's state)."""
+    row = BotModel(
+        token=TOKEN,
+        token_hash="irrelevant",
+        telegram_bot_id=123456789,
+        username="clonedbot",
+        title="Cloned Bot",
+        owner_id=1,
+        is_active=True,
+        bot_type=BotType.HELLO,
+    )
+    row.config = BotConfig(flow=flow)
+    row.id = 7
+    return row
+
+
+def _install_reclone(monkeypatch) -> tuple[list, AsyncMock]:
+    """Fake ``session_scope`` (merge = the same row) + capture invalidations."""
+    merged: list = []
+
+    class _Session:
+        async def merge(self, obj):
+            merged.append(obj)
+            return obj
+
+        async def flush(self):
+            return None
+
+    @asynccontextmanager
+    async def scope():
+        yield _Session()
+
+    monkeypatch.setattr(svc, "session_scope", scope)
+    invalidate = AsyncMock()
+    monkeypatch.setattr(svc, "invalidate_bot_config", invalidate)
+    return merged, invalidate
+
+
+def test_reclone_replaces_base_preserves_owner_layer_and_bumps_stamp(monkeypatch) -> None:
+    """The S2.3 contract in one test: fresh base, kept translations + mode,
+    new stamp, same bot_type, invalidated cache."""
+    old = get_template("hello_world", version=1).seed.model_dump()
+    old["greeting"] = "OWNER EDIT"  # base customization — must be REPLACED
+    old["translations"] = {"fa": {"greeting": "سلام وکیوم"}}  # owner layer — kept
+    old["single_language"] = True  # owner mode — kept
+    bot = _hello_bot_row(old)
+
+    # Simulate the registry having moved on: clone to the (bumped) latest.
+    merged, _invalidate = _install_reclone(monkeypatch)
+    spec = get_template("hello_world")  # latest — same v1 in today's registry
+    asyncio.run(svc.reclone_bot(bot, spec))
+
+    assert len(merged) == 1
+    row = merged[0]
+    assert row is bot
+    flow = row.config.flow
+    assert flow["greeting"] == "Hello there! 👋"  # owner edit replaced by the seed
+    assert flow["translations"] == {"fa": {"greeting": "سلام وکیوم"}}  # carried verbatim
+    assert flow["single_language"] is True  # owner mode survives
+    assert flow["template"] == {"id": "hello_world", "version": spec.version}
+    assert row.bot_type is BotType.HELLO  # unchanged, same-bot_type re-clone
+
+
+def test_reclone_invalidates_redis_cache(monkeypatch) -> None:
+    """Re-clone rides the exact same cache path as every settings write."""
+    bot = _hello_bot_row(get_template("hello_world").seed.model_dump())
+    _merged, invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world")))
+
+    invalidate.assert_awaited_once_with(TOKEN)  # not set_bot_config — invalidate
+
+
+def test_reclone_idempotent_same_flow_twice(monkeypatch) -> None:
+    """Re-cloning the same version twice persists the same flow."""
+    spec = get_template("hello_world")
+    bot = _hello_bot_row(spec.seed.model_dump())
+    merged, _invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, spec))
+    first = dict(merged[0].config.flow)
+    merged.clear()
+    asyncio.run(svc.reclone_bot(bot, spec))
+    second = dict(merged[0].config.flow)
+
+    assert first == second
+
+
+def test_reclone_preserve_optout_drops_owner_layer(monkeypatch) -> None:
+    """``preserve=[]`` = a fully bare reset (owner explicitly opted out)."""
+    old = get_template("hello_world").seed.model_dump()
+    old["translations"] = {"fa": {"greeting": "سلام"}}
+    old["single_language"] = True
+    bot = _hello_bot_row(old)
+    merged, _invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world"), preserve=[]))
+
+    flow = merged[0].config.flow
+    assert flow["translations"] == get_template("hello_world").seed.model_dump()["translations"]
+    assert flow["single_language"] is False
+
+
+def test_reclone_rejects_keys_outside_whitelist(monkeypatch) -> None:
+    bot = _hello_bot_row(get_template("hello_world").seed.model_dump())
+    _merged, invalidate = _install_reclone(monkeypatch)
+
+    with pytest.raises(ValueError, match="not preservable"):
+        asyncio.run(svc.reclone_bot(bot, get_template("hello_world"), preserve=["greeting"]))
+    invalidate.assert_not_awaited()  # nothing persisted, nothing invalidated
+
+
+def test_reclone_adoption_from_legacy_unstamped_flow(monkeypatch) -> None:
+    """A pre-Phase-2 flow (no stamp) adopts the template cleanly."""
+    legacy = {"bot_type": "hello", "greeting": "old starter", "single_language": True}
+    bot = _hello_bot_row(legacy)
+    merged, invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world")))
+
+    flow = merged[0].config.flow
+    assert flow["template"] == {"id": "hello_world", "version": 1}  # adopted
+    assert flow["single_language"] is True  # still the owner's mode
+    invalidate.assert_awaited_once_with(TOKEN)
+
+
+def test_reclone_flips_row_type_with_seed(monkeypatch) -> None:
+    """The row/discriminator invariant: bot_type follows the applied seed.
+
+    The API layer guards same-type re-clones in Phase 2, but the service
+    keeps the invariant every other write path enforces (defence in depth:
+    a hello→hello adoption must never leave a generic row behind).
+    """
+    bot = _hello_bot_row(get_template("hello_world").seed.model_dump())
+    merged, _invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world")))
+
+    assert merged[0].bot_type is BotType.HELLO  # type set from the seed's own flow
+
+
+def test_reclone_bot_without_config_row_creates_one(monkeypatch) -> None:
+    """A legacy row with no BotConfig at all: re-clone seeds it fresh."""
+    bot = _hello_bot_row({"bot_type": "hello"})
+    bot.config = None
+    merged, invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world")))
+
+    flow = merged[0].config.flow
+    assert flow["template"] == {"id": "hello_world", "version": 1}
+    invalidate.assert_awaited_once_with(TOKEN)

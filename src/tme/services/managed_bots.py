@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from tme.config import settings
 from tme.core.bot_registry import get_tenant_bot
-from tme.core.cache import set_bot_config
+from tme.core.cache import invalidate_bot_config, set_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotConfig, BotType, User
@@ -33,6 +33,7 @@ from tme.schemas.bot_config import (
     parse_bot_config,
 )
 from tme.services.vault import _master_key, store_bot_token, token_hash
+from tme.templates import TemplateSpec, clone_flow
 
 logger = get_logger(__name__)
 
@@ -186,6 +187,78 @@ async def provision_managed_bot(
         logger.warning("Webhook not yet registered for managed bot …%s", token[-6:])
 
     logger.info("Provisioned managed bot @%s (tg=%s)", username, telegram_bot_id)
+    return bot_row
+
+
+async def reclone_bot(
+    bot_row: BotModel,
+    spec: TemplateSpec,
+    *,
+    preserve: str | list[str] | None = None,
+) -> BotModel:
+    """Apply ``spec``'s seed to an EXISTING bot's base flow (S2.3 re-clone).
+
+    The explicit owner action behind "Reset to template": replaces the base
+    copy wholesale with the seed's flow, carries the whitelisted owner keys
+    (``translations`` + ``single_language`` by default), updates the row's
+    provenance stamp to the applied version, and keeps the row/flow
+    discriminator invariant (``bot_type`` follows the seed — pre-Phase-2 and
+    scratch bots can therefore ADOPT a template through this same path).
+
+    Owns its transaction, mirroring :func:`provision_managed_bot`: the row is
+    re-attached (``merge``) and flushed inside ``session_scope``, then the
+    Redis key is invalidated AFTER the session closed so the next request
+    read-throughs Postgres — the single source of truth. ``bot_row`` may be
+    detached (the API route loads it owner-scoped, closes the session and
+    delegates here) or a brand-new row; the rebuilt flow is revalidated
+    through :class:`~tme.schemas.bot_config.BotConfigUnion` BEFORE anything
+    is persisted, so a seed the engine would reject never reaches the DB and
+    a rejected call never invalidates a live cache entry.
+
+    Raises:
+        ValueError: ``preserve`` names a key outside the closed whitelist, or
+            the rebuilt flow's discriminator disagrees with the template (a
+            registry bug — S2.1's import-time loop pins the other way).
+
+    Idempotent: re-cloning the same version twice persists the same flow.
+    """
+    old_flow = dict(bot_row.config.flow) if bot_row.config is not None else {}
+    new_flow = clone_flow(spec, old_flow, preserve)
+
+    # Revalidate the rebuilt flow through the same union the runtime parses
+    # with — provenance stamp and preserved keys ride `extra="allow"`/typed
+    # fields, so a broken combination fails HERE, never at a live update.
+    parsed = parse_bot_config(new_flow)
+    if parsed.bot_type != spec.bot_type:  # pragma: no cover - registry pins this
+        raise ValueError(
+            f"rebuilt flow bot_type {parsed.bot_type!r} does not match template {spec.id!r}"
+        )
+
+    if bot_row.config is None:
+        bot_row.config = BotConfig(flow=new_flow)
+    else:
+        bot_row.config.flow = new_flow
+    # The row/discriminator invariant every other write path enforces —
+    # adoption (scratch hello bot → hello_world template) flips the type
+    # in the same transaction.
+    bot_row.bot_type = spec.bot_type
+
+    async with session_scope() as session:
+        await session.merge(bot_row)
+        await session.flush()
+
+    # Invalidate AFTER the commit: the next request re-reads the row from
+    # Postgres and re-validates it (same path as disable/enable, type switch
+    # and config edits — never a direct `set_bot_config`).
+    await invalidate_bot_config(bot_row.token)
+
+    logger.info(
+        "Re-cloned bot id=%s to template %s v%s (preserve=%s)",
+        getattr(bot_row, "id", "?"),
+        spec.id,
+        spec.version,
+        preserve,
+    )
     return bot_row
 
 

@@ -39,6 +39,7 @@ from tme.schemas.bot_config import (
 from tme.templates.registry import (
     _DEFAULT_SEED_FOR_TYPE,
     REGISTRY,
+    STAMP_KEY,
     TemplateSpec,
     register,
     set_default_seed,
@@ -47,7 +48,7 @@ from tme.templates.registry import (
 #: The flow rider carrying every template's provenance — S2.3 reads it to
 #: know which seed a bot came from ("update available" when the registry is
 #: ahead of the row's stamped version).
-_STAMP = "template"
+_STAMP = STAMP_KEY
 
 _union_adapter: TypeAdapter[BotConfigUnion] = TypeAdapter(BotConfigUnion)
 
