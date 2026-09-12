@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,9 @@ from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotType, User
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.auth import validate_telegram_init_data
+from tme.services.bot_health import bot_is_alive, forget_bot_liveness, probe_bots
 from tme.services.managed_bots import _default_config_for
+from tme.services.vault import delete_bot_token
 
 logger = get_logger(__name__)
 
@@ -42,6 +44,9 @@ class BotSummary(BaseModel):
     is_active: bool
     webhook_registered: bool
     created_at: datetime
+    #: ``active`` (serving), ``paused`` (owner switched it off), or
+    #: ``archived`` (killed in BotFather — token revoked, detected by probe).
+    state: str
 
 
 class ConfigUpdate(BaseModel):
@@ -90,7 +95,21 @@ async def _load_owned_bot(
     return result.scalar_one_or_none()
 
 
-def _summarize(bot: BotModel) -> BotSummary:
+def _state_for(is_active: bool, alive: bool | None) -> str:
+    """Dashboard state for a bot.
+
+    ``paused``   — the owner switched it off (not probed).
+    ``archived`` — Telegram rejected the token: deleted in BotFather.
+    ``active``   — serving (or liveness not checked on this path).
+    """
+    if not is_active:
+        return "paused"
+    if alive is False:
+        return "archived"
+    return "active"
+
+
+def _summarize(bot: BotModel, *, alive: bool | None = None) -> BotSummary:
     return BotSummary(
         id=bot.id,
         username=bot.username,
@@ -99,6 +118,7 @@ def _summarize(bot: BotModel) -> BotSummary:
         is_active=bot.is_active,
         webhook_registered=bot.webhook_registered,
         created_at=bot.created_at,
+        state=_state_for(bot.is_active, alive),
     )
 
 
@@ -107,7 +127,14 @@ def _summarize(bot: BotModel) -> BotSummary:
 # --------------------------------------------------------------------------- #
 @router.get("/bots", response_model=list[BotSummary])
 async def list_bots(auth: int = Depends(_require_auth)) -> list[BotSummary]:
-    """All bots owned by the authenticated user (newest first)."""
+    """All bots owned by the authenticated user (newest first).
+
+    Active bots get a cached liveness probe: Telegram sends no "bot deleted"
+    event, so a bot killed in BotFather would otherwise keep looking healthy.
+    Probed bots that reject their token come back as ``state="archived"`` so
+    the dashboard can move them out of the working list. Paused bots are not
+    probed — they are already switched off.
+    """
     async with session_scope() as session:
         result = await session.execute(
             select(BotModel)
@@ -115,7 +142,9 @@ async def list_bots(auth: int = Depends(_require_auth)) -> list[BotSummary]:
             .where(User.telegram_id == auth)
             .order_by(BotModel.created_at.desc())
         )
-        return [_summarize(bot) for bot in result.scalars()]
+        bots = list(result.scalars())
+        alive = await probe_bots([(b.id, b.token) for b in bots if b.is_active])
+        return [_summarize(bot, alive=alive.get(bot.id)) for bot in bots]
 
 
 @router.get("/bots/{bot_id}", response_model=BotSummary)
@@ -123,9 +152,10 @@ async def get_bot(bot_id: int, auth: int = Depends(_require_auth)) -> BotSummary
     """One owned bot (404 for bots that don't exist or aren't yours)."""
     async with session_scope() as session:
         bot = await _load_owned_bot(session, bot_id, auth)
-    if bot is None:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    return _summarize(bot)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        alive = await bot_is_alive(bot.id, bot.token) if bot.is_active else None
+        return _summarize(bot, alive=alive)
 
 
 @router.get("/bots/{bot_id}/config")
@@ -199,7 +229,10 @@ async def update_bot(
         if payload.is_active is not None:
             bot.is_active = payload.is_active
 
-        summary = _summarize(bot)
+        # Re-probing on toggle keeps the response consistent with the list
+        # endpoint (a bot archived by Telegram stays archived when paused).
+        alive = await bot_is_alive(bot.id, bot.token) if bot.is_active else None
+        summary = _summarize(bot, alive=alive)
         token = bot.token  # captured before the session closes
 
     await invalidate_bot_config(token)
@@ -211,3 +244,26 @@ async def update_bot(
         summary.bot_type,
     )
     return summary
+
+
+@router.delete("/bots/{bot_id}", status_code=204)
+async def delete_bot(bot_id: int, auth: int = Depends(_require_auth)) -> Response:
+    """Permanently remove one of the owner's bots (archive cleanup).
+
+    Telegram has no "bot deleted" event, so a bot killed in BotFather only
+    shows up as ``state="archived"`` (see :mod:`tme.services.bot_health`);
+    this is the explicit removal. The row, its config, its vaulted token and
+    both cache entries go with it.
+    """
+    async with session_scope() as session:
+        bot = await _load_owned_bot(session, bot_id, auth)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        token = bot.token  # captured before the session closes
+        await delete_bot_token(session, bot_id=bot_id)
+        await session.delete(bot)
+
+    await forget_bot_liveness(bot_id)
+    await invalidate_bot_config(token)
+    logger.info("Deleted bot id=%s (owner tg=%s)", bot_id, auth)
+    return Response(status_code=204)

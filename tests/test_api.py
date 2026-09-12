@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 
 from tme import main
+from tme.api import routes as routes_module
 from tme.database.models import BotType
 
 client = TestClient(main.app)
@@ -48,8 +49,9 @@ def _install(
     bot_row,
     auth_id: int | None = _OWNER_TELEGRAM_ID,
     invalidate: AsyncMock | None = None,
+    alive: bool = True,
 ):
-    """Fake the initData auth, sessions, and cache invalidation."""
+    """Fake the initData auth, sessions, cache invalidation, and liveness."""
     monkeypatch.setattr("tme.api.routes.validate_telegram_init_data", lambda _h: auth_id)
 
     @asynccontextmanager
@@ -61,24 +63,40 @@ def _install(
     if invalidate is None:
         invalidate = AsyncMock()
     monkeypatch.setattr("tme.api.routes.invalidate_bot_config", invalidate)
+
+    # Liveness probes would hit Telegram + Redis — stub the whole seam.
+    async def _fake_probe_bots(pairs):
+        return {bot_id: alive for bot_id, _token in pairs}
+
+    async def _fake_bot_is_alive(_bot_id, _token):
+        return alive
+
+    monkeypatch.setattr("tme.api.routes.probe_bots", _fake_probe_bots)
+    monkeypatch.setattr("tme.api.routes.bot_is_alive", _fake_bot_is_alive)
+    monkeypatch.setattr("tme.api.routes.forget_bot_liveness", AsyncMock())
+    monkeypatch.setattr("tme.api.routes.delete_bot_token", AsyncMock())
     return invalidate
 
 
 class _FakeSession:
     def __init__(self, bot_row) -> None:
         self._bot_row = bot_row
+        self.deleted: list = []
 
     async def execute(self, _statement):
         return _FakeResult(self._bot_row)
 
+    async def delete(self, obj) -> None:
+        self.deleted.append(obj)
 
-def _bot(*, config_flow: dict | None = None) -> SimpleNamespace:
+
+def _bot(*, config_flow: dict | None = None, is_active: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         id=7,
         username="mybot",
         title="My Bot",
         bot_type=BotType.GENERIC,
-        is_active=True,
+        is_active=is_active,
         webhook_registered=True,
         created_at=datetime.now(UTC),
         token="123456789:SECRET_TOKEN",
@@ -243,3 +261,71 @@ def test_update_bot_not_owned_404(monkeypatch) -> None:
     resp = client.patch("/api/bots/999", json={"is_active": False}, headers=_AUTH)
 
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Bot state + archive (deleted-in-BotFather sync)
+# --------------------------------------------------------------------------- #
+def test_list_bots_live_bot_is_active_state(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=[_bot()], alive=True)
+
+    payload = client.get("/api/bots", headers=_AUTH).json()
+
+    assert payload[0]["state"] == "active"
+
+
+def test_list_bots_revoked_token_reports_archived(monkeypatch) -> None:
+    """A bot killed in BotFather rejects getMe → the dashboard archives it."""
+    _install(monkeypatch, bot_row=[_bot()], alive=False)
+
+    payload = client.get("/api/bots", headers=_AUTH).json()
+
+    assert payload[0]["state"] == "archived"
+    assert payload[0]["is_active"] is True  # TME never turned it off
+
+
+def test_list_bots_paused_bot_stays_paused(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=[_bot(is_active=False)], alive=False)
+
+    payload = client.get("/api/bots", headers=_AUTH).json()
+
+    assert payload[0]["state"] == "paused"
+
+
+def test_get_bot_revoked_token_reports_archived(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=_bot(), alive=False)
+
+    resp = client.get("/api/bots/7", headers=_AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "archived"
+
+
+def test_delete_bot_removes_and_invalidates(monkeypatch) -> None:
+    invalidate = _install(monkeypatch, bot_row=_bot())
+
+    resp = client.delete("/api/bots/7", headers=_AUTH)
+
+    assert resp.status_code == 204
+    invalidate.assert_awaited()  # tenant cache dropped
+
+
+def test_delete_bot_drops_liveness_and_vault(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=_bot())
+
+    client.delete("/api/bots/7", headers=_AUTH)
+
+    routes_module.forget_bot_liveness.assert_awaited()  # type: ignore[attr-defined]
+    routes_module.delete_bot_token.assert_awaited()  # type: ignore[attr-defined]
+
+
+def test_delete_bot_not_owned_404(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=None)
+
+    resp = client.delete("/api/bots/999", headers=_AUTH)
+
+    assert resp.status_code == 404
+
+
+def test_delete_bot_requires_auth() -> None:
+    assert client.delete("/api/bots/7").status_code == 401

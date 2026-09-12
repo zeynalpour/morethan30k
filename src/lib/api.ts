@@ -11,6 +11,10 @@ export interface BotRow {
   is_active: boolean;
   webhook_registered: boolean;
   created_at: string;
+  // "active" (serving) | "paused" (owner switched it off) | "archived"
+  // (deleted in BotFather — Telegram rejected the token, detected by the
+  // backend's liveness probe; see tme/services/bot_health.py).
+  state: string;
 }
 
 export interface MenuButtonData {
@@ -76,6 +80,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail);
   }
+  // 204 No Content (bot deletion) — nothing to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -95,6 +101,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  // Permanent removal (archive cleanup for bots deleted in BotFather).
+  deleteBot: (botId: number) =>
+    request<void>(`/api/bots/${botId}`, { method: "DELETE" }),
 };
 
 export function wrapConfig(bot: BotRow, flow: BotConfigFlow): BotConfigRow {

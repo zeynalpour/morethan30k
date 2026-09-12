@@ -25,7 +25,7 @@ import os
 import uuid
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tme.config import settings
@@ -182,6 +182,14 @@ async def store_bot_token(session: AsyncSession, *, bot_id: int, token: str) -> 
 async def load_bot_token(session: AsyncSession, *, bot_id: int) -> str | None:
     """Return a tenant bot's decrypted token, or ``None`` if not vaulted."""
     return await load_secret(session, kind=SecretKind.BOT_TOKEN, ref_id=str(bot_id))
+
+
+async def delete_bot_token(session: AsyncSession, *, bot_id: int) -> None:
+    """Remove a tenant bot's vaulted token (the bot itself is being deleted)."""
+    await session.execute(
+        delete(Secret).where(Secret.kind == SecretKind.BOT_TOKEN, Secret.ref_id == str(bot_id))
+    )
+    logger.debug("Removed vaulted token for bot id=%s", bot_id)
 
 
 def new_api_key() -> str:

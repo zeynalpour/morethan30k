@@ -211,6 +211,28 @@ export default function App() {
     })();
   }, []);
 
+  // Archive cleanup: a bot deleted in BotFather can't be revived (its token
+  // is gone) — removing it just forgets the row in TME.
+  const handleRemoveBot = useCallback(
+    async (target: BotRow) => {
+      const label = target.title || target.username || `Bot #${target.id}`;
+      if (!window.confirm(`Remove ${label} from your dashboard? This cannot be undone.`)) {
+        return;
+      }
+      haptic("medium");
+      try {
+        await api.deleteBot(target.id);
+        setBots((prev) => prev.filter((b) => b.id !== target.id));
+        showToast(`${label} removed`);
+        haptic("light");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Failed to remove bot", "error");
+        haptic("heavy");
+      }
+    },
+    [showToast, haptic]
+  );
+
   useEffect(() => {
     const tg = window.Telegram?.WebApp;
     if (!tg) return;
@@ -266,7 +288,12 @@ export default function App() {
       )}
 
       {view === "bots" && (
-        <BotList bots={bots} currentBotId={bot?.id} onSelect={handleSwitchBot} />
+        <BotList
+          bots={bots}
+          currentBotId={bot?.id}
+          onSelect={handleSwitchBot}
+          onRemove={handleRemoveBot}
+        />
       )}
     </div>
   );
