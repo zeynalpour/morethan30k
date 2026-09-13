@@ -25,14 +25,130 @@ from tme.database.models import BotType
 from tme.schemas.bot_config import BotConfigUnion
 
 __all__ = [
+    "PRESERVABLE_KEYS",
     "REGISTRY",
+    "STAMP_KEY",
     "TemplateSpec",
+    "clone_flow",
     "default_seed_for",
     "get_template",
     "list_templates",
     "register",
+    "resolve_template",
     "set_default_seed",
+    "stamp_of",
+    "template_updates",
 ]
+
+
+#: Flow rider key carrying a clone's provenance — ``{"id": ..., "version": ...}``.
+#: S2.1 stamped seeds with it; S2.3 reads it to answer "which seed is this
+#: bot from, and is the registry ahead of it?".
+STAMP_KEY = "template"
+
+#: Owner-controlled flow keys a re-clone may carry over from the OLD flow
+#: onto the fresh seed (the Architect's ``preserve`` whitelist — the Phase 1
+#: i18n layer is the owner's, never the template's). Never a generic
+#: deep-merge: each listed key is copied verbatim, nothing else.
+PRESERVABLE_KEYS = ("translations", "single_language")
+
+
+def _stamp_of(flow: dict) -> dict | None:
+    """The flow's provenance rider, or ``None`` for unstamped/legacy flows.
+
+    Tolerant on purpose: the stamp is ``extra="allow"`` data, so a legacy
+    row (pre-Phase-2), a scratch bot, or a hand-edited flow may carry
+    nothing — or something malformed — where the stamp would be. A rider
+    that is not a dict, or lacks a usable ``id``/``version``, reads as
+    "no provenance" (the adoption path), never as an error.
+
+    Returns a dict with EXACTLY the keys ``id`` and ``version`` (a
+    well-formed stamp may carry extra metadata that callers must not
+    serialize into comparisons or API responses).
+    """
+    stamp = flow.get(STAMP_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    template_id = stamp.get("id")
+    version = stamp.get("version")
+    if not isinstance(template_id, str) or not isinstance(version, int):
+        return None
+    return {"id": template_id, "version": version}
+
+
+def stamp_of(flow: dict) -> dict | None:
+    """Public read of a flow's provenance (see :func:`_stamp_of`)."""
+    return _stamp_of(flow)
+
+
+def resolve_template(flow: dict) -> TemplateSpec:
+    """Resolve the template a flow's stamp records — the PINNED version.
+
+    The stamp pins: it answers "which seed did this clone come from", so the
+    pinned spec (not the latest) is returned. Callers wanting "is there
+    something newer" use :func:`template_updates`; callers wanting "give me
+    the current seed" use :func:`get_template` with no version.
+
+    Raises:
+        KeyError: The flow carries no usable stamp, or the stamp references
+            an id/version no longer in the registry (deleted template, or a
+            clone of a since-removed version).
+    """
+    stamp = _stamp_of(flow)
+    if stamp is None:
+        raise KeyError("flow carries no template provenance stamp")
+    return get_template(stamp["id"], version=stamp["version"])
+
+
+def template_updates(flow: dict) -> TemplateSpec | None:
+    """The latest spec for the flow's template when the registry is AHEAD.
+
+    Pure read (no Postgres, no Redis, no background job — "update available"
+    is a dashboard badge, never a silent mutation). Returns ``None`` when the
+    flow is unstamped (scratch/legacy — no update to offer), the template is
+    unknown (deleted from the registry), or the clone already carries the
+    latest version. A NEWER version is an explicit, owner-confirmed re-clone
+    away; existing clones are never touched by a bump.
+    """
+    stamp = _stamp_of(flow)
+    if stamp is None:
+        return None
+    try:
+        latest = get_template(stamp["id"])
+    except KeyError:
+        return None  # template removed from the registry — nothing to offer
+    return latest if latest.version > stamp["version"] else None
+
+
+def clone_flow(spec: TemplateSpec, old_flow: dict, preserve: str | list[str] | None) -> dict:
+    """Build the flow a re-clone persists: the fresh seed + carried keys.
+
+    The base copy is replaced WHOLESALE by ``spec.seed`` (a naive merge over
+    ``translations`` + ``menu_buttons`` would silently produce half-old
+    half-new copy — worse than a clean reset). Then the whitelisted
+    ``preserve`` keys are copied verbatim from the OLD flow onto the new one:
+    ``translations`` (overlay semantics make owner translations safe over a
+    changed base) and ``single_language`` (an owner decision a seed must
+    never flip). The result carries the new stamp by construction — the
+    seed itself is stamped at registry time.
+
+    ``preserve=None`` defaults to the full whitelist (S2.3's owner workflow:
+    the Phase 1 layer survives every reset unless the owner opts out).
+    Unknown keys raise — the whitelist is closed, never a generic deep-merge.
+    """
+    if preserve is None:
+        preserve = list(PRESERVABLE_KEYS)
+    elif isinstance(preserve, str):
+        preserve = [preserve]
+    unknown = [key for key in preserve if key not in PRESERVABLE_KEYS]
+    if unknown:
+        raise ValueError(f"keys not preservable: {', '.join(sorted(unknown))}")
+
+    flow = spec.seed.model_dump()
+    for key in preserve:
+        if key in old_flow:
+            flow[key] = old_flow[key]
+    return flow
 
 
 class TemplateSpec(BaseModel):

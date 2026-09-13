@@ -211,8 +211,8 @@ export default function App() {
     })();
   }, []);
 
-  // Archive cleanup: a bot deleted in BotFather can't be revived (its token
-  // is gone) — removing it just forgets the row in TME.
+  // Archive cleanup, and the S2.3 re-clone reload — both are owner actions
+  // that change the bot row server-side, so each reloads what it touched.
   const handleRemoveBot = useCallback(
     async (target: BotRow) => {
       const label = target.title || target.username || `Bot #${target.id}`;
@@ -229,6 +229,35 @@ export default function App() {
         showToast(e instanceof Error ? e.message : "Failed to remove bot", "error");
         haptic("heavy");
       }
+    },
+    [showToast, haptic]
+  );
+
+  // S2.3: a re-clone replaced the flow server-side — reload it so the editor
+  // shows the new base copy (translations/single_language were preserved by
+  // the backend's whitelist, but the base fields all changed).
+  const handleRecloned = useCallback(async () => {
+    if (!bot) return;
+    haptic("medium");
+    try {
+      const [updated, flow] = await Promise.all([
+        api.getBot(bot.id),
+        api.getConfig(bot.id),
+      ]);
+      setBot(updated);
+      setConfig(wrapConfig(updated, flow));
+      showToast("Bot reset to template — translations kept");
+      haptic("light");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to reload configuration", "error");
+      haptic("heavy");
+    }
+  }, [bot, showToast, haptic]);
+
+  const handlePanelError = useCallback(
+    (msg: string) => {
+      showToast(msg, "error");
+      haptic("heavy");
     },
     [showToast, haptic]
   );
@@ -278,6 +307,8 @@ export default function App() {
             bot={bot}
             onSave={handleSaveConfig}
             onTypeChange={handleTypeChange}
+            onRecloned={handleRecloned}
+            onPanelError={handlePanelError}
             onShowBots={() => {
               haptic("light");
               loadBots();

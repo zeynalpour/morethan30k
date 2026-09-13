@@ -9,26 +9,40 @@ pure in-memory data: it needs no Postgres, no Redis, and adds no handler or
 ordinary ``bot_configs`` row behind the one shared engine).
 
 Public surface (all re-exports from :mod:`tme.templates.registry`):
-:class:`TemplateSpec`, :func:`get_template`, :func:`list_templates`.
+:class:`TemplateSpec`, :func:`get_template`, :func:`list_templates`,
+:func:`resolve_template`, :func:`template_updates`, :func:`clone_flow`,
+:func:`stamp_of`.
 """
 
 from __future__ import annotations
 
 from tme.templates import builtin as _builtin  # noqa: F401  (registration side-effect)
 from tme.templates.registry import (
+    PRESERVABLE_KEYS,
+    STAMP_KEY,
     TemplateSpec,
+    clone_flow,
     default_seed_for,
     get_template,
     list_templates,
     register,
+    resolve_template,
     set_default_seed,
+    stamp_of,
+    template_updates,
 )
 
 __all__ = [
+    "PRESERVABLE_KEYS",
+    "STAMP_KEY",
     "TemplateSpec",
+    "clone_flow",
     "default_seed_for",
     "get_template",
     "list_templates",
     "register",
+    "resolve_template",
     "set_default_seed",
+    "stamp_of",
+    "template_updates",
 ]

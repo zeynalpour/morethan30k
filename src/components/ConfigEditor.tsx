@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData, Translation } from "../lib/api";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
+import { TemplatePanel } from "./TemplatePanel";
 
 interface ConfigEditorProps {
   config: BotConfigRow;
@@ -8,9 +9,11 @@ interface ConfigEditorProps {
   onSave: (flow: BotConfigFlow) => void;
   onTypeChange: (botType: string) => void;
   onShowBots: () => void;
+  onRecloned: () => void;
+  onPanelError: (msg: string) => void;
 }
 
-export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: ConfigEditorProps) {
+export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, onRecloned, onPanelError }: ConfigEditorProps) {
   const flow = config.flow as BotConfigFlow;
   const [welcomeMessage, setWelcomeMessage] = useState(flow.welcome_message || "");
   const [fallbackMessage, setFallbackMessage] = useState(flow.fallback_message || "");
@@ -131,6 +134,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots }: 
           <option value="echo">Echo Bot</option>
         </select>
       </Section>
+
+      <TemplatePanel
+        botId={bot.id}
+        botType={bot.bot_type}
+        onRecloned={onRecloned}
+        onError={onPanelError}
+      />
 
       <Section title="Welcome Message" subtitle="Sent when a user starts the bot with /start">
         <textarea

@@ -26,7 +26,18 @@ from tme.schemas.bot_config import (
     parse_bot_config,
 )
 from tme.services.managed_bots import _default_config_for
-from tme.templates import TemplateSpec, default_seed_for, get_template, list_templates, register
+from tme.templates import (
+    PRESERVABLE_KEYS,
+    STAMP_KEY,
+    TemplateSpec,
+    clone_flow,
+    default_seed_for,
+    get_template,
+    list_templates,
+    register,
+    resolve_template,
+    template_updates,
+)
 from tme.templates.builtin import HELLO_WORLD_SPEC
 from tme.templates.registry import REGISTRY
 
@@ -263,3 +274,161 @@ def test_feedback_steps_mix_options_and_free_text() -> None:
     steps = get_template("feedback_collector").seed.model_dump()["steps"]
     assert "options" in steps[0]
     assert steps[1]["answer_type"] == "free_text"
+
+
+# ===================================================== S2.3 — re-clone mechanics
+def _bumped_hello(version: int, greeting: str) -> TemplateSpec:
+    """A hello_world bump at ``version`` with a changed seed copy."""
+    dumped = get_template("hello_world", version=1).seed.model_dump()
+    dumped["greeting"] = greeting
+    dumped[STAMP_KEY] = {"id": "hello_world", "version": version}
+    return TemplateSpec(
+        id="hello_world",
+        version=version,
+        bot_type=BotType.HELLO,
+        display_name="Hello World",
+        description="test bump",
+        seed=_union_adapter.validate_python(dumped),
+    )
+
+
+def test_resolve_template_reads_the_flow_stamp(pristine_registry: None) -> None:
+    stamped = get_template("quiz").seed.model_dump()
+    assert resolve_template(stamped).id == "quiz"
+    assert resolve_template(stamped).version == 1  # the PINNED version…
+    register(_hello_spec(version=3))
+    assert resolve_template(stamped).version == 1  # …not the latest
+    assert resolve_template(get_template("hello_world").seed.model_dump()).version == 3
+
+
+def test_resolve_template_rejects_unstamped_and_legacy_flows() -> None:
+    # Scratch bot (S2.2's unstamped generic default).
+    assert "template" not in default_seed_for(BotType.GENERIC).model_dump()
+    with pytest.raises(KeyError, match="no template provenance"):
+        resolve_template(default_seed_for(BotType.GENERIC).model_dump())
+    # Pre-Phase-2 row: a flow dict without any stamp rider.
+    legacy = {"bot_type": "generic", "welcome_message": "old starter"}
+    with pytest.raises(KeyError, match="no template provenance"):
+        resolve_template(legacy)
+    # Malformed riders read as no-provenance too (tolerant, never an error
+    # at the read path — the dashboard treats it as adoption-ready).
+    with pytest.raises(KeyError, match="no template provenance"):
+        resolve_template({"template": {"id": "quiz"}})  # version missing
+    with pytest.raises(KeyError, match="no template provenance"):
+        resolve_template({"template": "quiz"})  # not a dict
+
+
+def test_resolve_template_unknown_pinned_version_raises(pristine_registry: None) -> None:
+    stamped = get_template("quiz").seed.model_dump()
+    stamped[STAMP_KEY] = {"id": "quiz", "version": 99}  # version since removed
+    with pytest.raises(KeyError):
+        resolve_template(stamped)
+
+
+def test_template_updates_none_when_registry_not_ahead() -> None:
+    stamped = get_template("hello_world").seed.model_dump()  # v1 == latest v1
+    assert template_updates(stamped) is None
+
+
+def test_template_updates_flips_when_registry_bumps(pristine_registry: None) -> None:
+    stamped_v1 = get_template("hello_world", version=1).seed.model_dump()
+    assert template_updates(stamped_v1) is None
+    register(_bumped_hello(version=2, greeting="Hi v2! 👋"))
+    update = template_updates(stamped_v1)
+    assert update is not None
+    assert update.version == 2
+    assert update.seed.model_dump()[STAMP_KEY] == {"id": "hello_world", "version": 2}
+    # The clone at the latest version sees nothing again.
+    assert template_updates(update.seed.model_dump()) is None
+
+
+def test_template_updates_none_for_unstamped_scratch_and_legacy() -> None:
+    assert template_updates(default_seed_for(BotType.GENERIC).model_dump()) is None
+    assert template_updates({"bot_type": "generic"}) is None
+    assert template_updates({"template": {"version": 2}}) is None  # no id → ignored
+
+
+def test_template_updates_none_when_template_deleted(pristine_registry: None) -> None:
+    stamped = get_template("quiz").seed.model_dump()
+    del REGISTRY["quiz"]
+    assert template_updates(stamped) is None
+
+
+def test_clone_flow_replaces_base_and_carries_whitelist() -> None:
+    old = get_template("hello_world", version=1).seed.model_dump()
+    old["greeting"] = "OWNER EDIT"  # base-copy customization…
+    old["translations"] = {"en": {"greeting": "owner translation"}}
+    old["single_language"] = True  # …and the Phase 1 owner layer
+    old["menu_buttons"] = [{"text": "owner button", "callback": "x"}]
+
+    spec = _bumped_hello(version=2, greeting="Fresh v2 copy")
+    flow = clone_flow(spec, old, None)  # None → full whitelist
+
+    assert flow["greeting"] == "Fresh v2 copy"  # base replaced wholesale
+    assert flow["menu_buttons"] == spec.seed.model_dump()["menu_buttons"]
+    assert flow["translations"] == {"en": {"greeting": "owner translation"}}  # carried
+    assert flow["single_language"] is True  # owner mode survives
+    assert flow[STAMP_KEY] == {"id": "hello_world", "version": 2}  # new stamp
+
+
+def test_clone_flow_preserve_optout_and_explicit_keys() -> None:
+    old = get_template("hello_world", version=1).seed.model_dump()
+    old["translations"] = {"fa": {"greeting": "سلام"}}
+    old["single_language"] = True
+
+    spec = _bumped_hello(version=2, greeting="v2")
+    # Explicit narrow whitelist: translations only.
+    flow = clone_flow(spec, old, ["translations"])
+    assert flow["translations"] == {"fa": {"greeting": "سلام"}}
+    assert flow["single_language"] is False  # the seed's own value — owner opted out
+    # Single string accepted as one-key whitelist.
+    flow2 = clone_flow(spec, old, "single_language")
+    assert flow2["single_language"] is True
+    assert flow2["translations"] == spec.seed.model_dump()["translations"]
+    # Empty whitelist = a fully bare reset.
+    flow3 = clone_flow(spec, old, [])
+    assert flow3["translations"] == spec.seed.model_dump()["translations"]
+    assert flow3["single_language"] is False
+
+
+def test_clone_flow_rejects_keys_outside_whitelist() -> None:
+    old = get_template("hello_world").seed.model_dump()
+    spec = _bumped_hello(version=2, greeting="v2")
+    with pytest.raises(ValueError, match="not preservable: menu_buttons"):
+        clone_flow(spec, old, ["menu_buttons"])
+    with pytest.raises(ValueError, match="not preservable: welcome_message"):
+        clone_flow(spec, old, "welcome_message")
+
+
+def test_clone_flow_without_old_flow_uses_pure_seed() -> None:
+    """Adoption on a bot with no config row yet: nothing to carry."""
+    spec = _bumped_hello(version=2, greeting="v2")
+    flow = clone_flow(spec, {}, None)
+    assert flow == spec.seed.model_dump()
+
+
+def test_clone_flow_result_validates_through_union() -> None:
+    """The rebuilt flow (stamp + preserved keys) round-trips the write path.
+
+    Same losslessness shape as the S2.1 seed tests: dumping the parsed
+    config equals dumping it again — preserved keys and stamp all survive.
+    (``model_dump()`` fills optional translation fields with ``None``, so
+    the equality is dump-vs-redump, never raw-dict-vs-dump.)
+    """
+    old = get_template("quiz").seed.model_dump()
+    old["translations"] = {"fa": {"fallback_message": "دوباره امتحان کنید"}}
+    old["single_language"] = True
+    spec = get_template("quiz")  # any version — the mechanics are identical
+    flow = clone_flow(spec, old, None)
+    parsed = parse_bot_config(flow)
+    assert parsed.single_language is True  # preserved key is typed, not lost
+    assert parsed.translations["fa"].fallback_message == "دوباره امتحان کنید"
+    redumped = parsed.model_dump()
+    assert _union_adapter.validate_python(redumped).model_dump() == redumped
+    # The stamp rider survives the union round-trip (extra="allow").
+    assert redumped[STAMP_KEY] == {"id": "quiz", "version": spec.version}
+
+
+def test_preservable_keys_are_exactly_translations_and_single_language() -> None:
+    """The whitelist is closed: the Phase 1 i18n layer, nothing else."""
+    assert PRESERVABLE_KEYS == ("translations", "single_language")
