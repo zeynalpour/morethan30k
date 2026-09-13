@@ -23,6 +23,7 @@ export function TemplatePanel({ botId, botType, onRecloned, onError }: TemplateP
   const [busy, setBusy] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const mounted = useRef(false);
 
   const load = useCallback(async () => {
@@ -34,10 +35,11 @@ export function TemplatePanel({ botId, botType, onRecloned, onError }: TemplateP
       if (!mounted.current) return;
       setProv(p);
       setTemplates(t);
-    } catch (e) {
-      // The panel degrades silently on read errors — lineage is metadata,
-      // never a reason to block the editor around it.
-      if (mounted.current) setProv(null);
+      setLoadFailed(false);
+    } catch {
+      // Lineage is metadata, but a panel that vanishes without explanation
+      // reads as "the feature is gone". Surface a retry instead.
+      if (mounted.current) setLoadFailed(true);
     }
   }, [botId]);
 
@@ -70,6 +72,21 @@ export function TemplatePanel({ botId, botType, onRecloned, onError }: TemplateP
     [botId, load, onRecloned, onError]
   );
 
+  if (loadFailed) {
+    return (
+      <Section title="Template" subtitle="Template info is unavailable right now.">
+        <button
+          className="btn-secondary w-full"
+          onClick={() => {
+            setLoadFailed(false);
+            load();
+          }}
+        >
+          ↻ Retry
+        </button>
+      </Section>
+    );
+  }
   if (prov === null || templates === null) return null;
 
   const current = prov.current;
@@ -77,6 +94,7 @@ export function TemplatePanel({ botId, botType, onRecloned, onError }: TemplateP
     ? templates.find((t) => t.id === current.id)
     : null;
   const sameTypeTemplates = templates.filter((t) => t.bot_type === botType);
+  const otherTemplates = sameTypeTemplates.filter((t) => t.id !== current?.id);
 
   return (
     <Section
@@ -121,6 +139,46 @@ export function TemplatePanel({ botId, botType, onRecloned, onError }: TemplateP
             <p className="text-xs" style={{ color: "var(--tg-hint)" }}>
               ✅ You're on the latest version of this template.
             </p>
+          )}
+
+          {/* Always offer a way to act on the template: being up to date must
+              not strand the owner with no button (they may still want to
+              re-apply it after editing, or switch to another one). */}
+          <div className="flex gap-2">
+            <button
+              className="btn-secondary flex-1"
+              disabled={busy}
+              onClick={() => setConfirmId(current.id)}
+            >
+              🔁 Re-apply template
+            </button>
+            {otherTemplates.length > 0 && (
+              <button
+                className="btn-secondary flex-1"
+                disabled={busy}
+                onClick={() => setShowPicker((v) => !v)}
+              >
+                📦 Change template
+              </button>
+            )}
+          </div>
+
+          {showPicker && otherTemplates.length > 0 && (
+            <div className="space-y-2">
+              {otherTemplates.map((t) => (
+                <button
+                  key={t.id}
+                  className="btn-secondary w-full text-left"
+                  disabled={busy}
+                  onClick={() => setConfirmId(t.id)}
+                >
+                  <b>{t.display_name}</b>
+                  <span className="block text-xs" style={{ color: "var(--tg-hint)" }}>
+                    {t.description}
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
         </>
       ) : (

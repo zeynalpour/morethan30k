@@ -101,8 +101,6 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       ...flow,
       bot_type: flow.bot_type || "generic",
       version: flow.version || 1,
-      welcome_message: welcomeMessage,
-      fallback_message: fallbackMessage,
       menu_buttons: menuButtons,
       active_modules: activeModules
         .split(",")
@@ -111,7 +109,17 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       translations: cleanedTranslations,
       single_language: singleLanguage,
     };
-    if (isHello) newFlow.greeting = greeting;
+    // Blank copy = "unset", never an override: sending "" here would store an
+    // empty message and make the bot reply with nothing (Telegram rejects
+    // empty text outright). Deleting the key lets the config default apply.
+    if (welcomeMessage.trim()) newFlow.welcome_message = welcomeMessage.trim();
+    else delete newFlow.welcome_message;
+    if (fallbackMessage.trim()) newFlow.fallback_message = fallbackMessage.trim();
+    else delete newFlow.fallback_message;
+    if (isHello) {
+      if (greeting.trim()) newFlow.greeting = greeting.trim();
+      else delete newFlow.greeting;
+    }
     if (isEcho) newFlow.echo_prefix = echoPrefix;
     onSave(newFlow);
     setSaving(false);
