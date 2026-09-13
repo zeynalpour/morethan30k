@@ -30,6 +30,16 @@ from aiogram.types import (
 from tme.core.i18n import localize
 from tme.core.logging import get_logger
 from tme.schemas.bot_config import BotConfigUnion, EchoBotConfig, HelloBotConfig, MenuButton
+from tme.services.steps import (
+    CANCEL_CALLBACK,
+    OPTION_PREFIX,
+    START_PREFIX,
+    cancel_flow,
+    handle_option_tap,
+    handle_text_answer,
+    parse_start_index,
+    start_flow_at,
+)
 from tme.services.user_language import clear_user_language, set_user_language
 
 logger = get_logger(__name__)
@@ -142,7 +152,78 @@ async def on_language_pick(callback: CallbackQuery, bot_config: BotConfigUnion) 
             await callback.message.edit_text(f"🌐 Language: {flag}")
 
 
-@dynamic_router.callback_query(F.data, ~F.data.startswith(_LANG_PREFIX))
+@dynamic_router.message(Command("cancel"))
+async def on_cancel(message: Message) -> None:
+    """Abandon an in-progress multi-step flow (no-op when none is active)."""
+    if message.from_user is None or message.bot is None:
+        return
+    if await cancel_flow(message.bot.id, message.from_user.id):
+        await message.answer("✖ Cancelled — send /start to begin again.")
+    else:
+        await message.answer("Nothing in progress. Send /start to begin.")
+
+
+# --------------------------------------------------------------------------- #
+# Multi-step flows (the `steps` primitive — Feedback / Quiz / Simple form)
+# --------------------------------------------------------------------------- #
+@dynamic_router.callback_query(F.data.startswith(START_PREFIX))
+async def on_step_start(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
+    """A menu button carrying ``step:{index}`` starts (or restarts) the flow."""
+    message = callback.message
+    if callback.from_user is None or not isinstance(message, Message) or message.bot is None:
+        await callback.answer()
+        return
+
+    started = await start_flow_at(
+        message.bot,
+        bot_config,
+        message.chat.id,
+        callback.from_user.id,
+        parse_start_index(callback.data or ""),
+    )
+    await callback.answer() if started else await callback.answer("Not available")
+
+
+@dynamic_router.callback_query(F.data.startswith(OPTION_PREFIX))
+async def on_step_option(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
+    """An option button: record the answer and move to the next step."""
+    message = callback.message
+    if callback.from_user is None or not isinstance(message, Message) or message.bot is None:
+        await callback.answer()
+        return
+
+    handled = await handle_option_tap(
+        message.bot,
+        bot_config,
+        message.chat.id,
+        callback.from_user.id,
+        callback.data or "",
+    )
+    await callback.answer()  # always clear Telegram's spinner
+    if not handled:
+        await message.answer("This question is no longer active — send /start to begin again.")
+
+
+@dynamic_router.callback_query(F.data == CANCEL_CALLBACK)
+async def on_step_cancel(callback: CallbackQuery) -> None:
+    """The ✖ Cancel button under a step prompt."""
+    message = callback.message
+    if callback.from_user is None or not isinstance(message, Message) or message.bot is None:
+        await callback.answer()
+        return
+    await cancel_flow(message.bot.id, callback.from_user.id)
+    await callback.answer("Cancelled ✖")
+    with suppress(TelegramBadRequest):
+        await message.edit_reply_markup(reply_markup=None)
+
+
+@dynamic_router.callback_query(
+    F.data,
+    ~F.data.startswith(_LANG_PREFIX),
+    ~F.data.startswith(START_PREFIX),
+    ~F.data.startswith(OPTION_PREFIX),
+    F.data != CANCEL_CALLBACK,
+)
 async def on_menu_click(
     callback: CallbackQuery, bot_config: BotConfigUnion, language_code: str | None
 ) -> None:
@@ -172,11 +253,29 @@ async def on_fallback(
 ) -> None:
     """Any non-menu message → dispatch by tenant type (localized).
 
+    Before type dispatch, an **active multi-step flow** claims the message as
+    its answer (that is how free-text steps such as Simple form's fields are
+    collected). Commands (``/start``, ``/cancel``, …) are never treated as
+    answers.
+
     - Echo   : mirror the user's text back (with optional prefix).
     - Hello  : re-greet once again (keeps the bot on-message).
     - default: the configured fallback text.
     """
     copy = localize(bot_config, language_code)
+
+    text = message.text or message.caption or ""
+    if (
+        text
+        and not text.startswith("/")
+        and message.from_user is not None
+        and message.bot is not None
+        and await handle_text_answer(
+            message.bot, bot_config, message.chat.id, message.from_user.id, text
+        )
+    ):
+        return
+
     if isinstance(bot_config, EchoBotConfig):
         prefix = copy.echo_prefix
         await message.answer(f"{prefix}{message.text or message.caption or ''}")
