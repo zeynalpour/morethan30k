@@ -164,8 +164,11 @@ def test_translation_buttons_validate_like_base_buttons() -> None:
 def test_blank_translation_does_not_blank_the_base() -> None:
     """An empty override means "unset", not "say nothing"."""
     cfg = TypeAdapter(BotConfigUnion).validate_python(
-        {"bot_type": "generic", "welcome_message": "base hello",
-         "translations": {"en": {"welcome_message": ""}}}
+        {
+            "bot_type": "generic",
+            "welcome_message": "base hello",
+            "translations": {"en": {"welcome_message": ""}},
+        }
     )
     assert localize(cfg, "en").welcome_message == "base hello"
 
