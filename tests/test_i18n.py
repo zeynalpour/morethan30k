@@ -156,3 +156,35 @@ def test_translation_buttons_validate_like_base_buttons() -> None:
         TypeAdapter(BotConfigUnion).validate_python(
             {"bot_type": "generic", "translations": {"fa": {"menu_buttons": [{"callback": "x"}]}}}
         )
+
+
+# --------------------------------------------------------------------------- #
+# Blank copy never reaches the wire (owner-reported: empty text → bot "dead")
+# --------------------------------------------------------------------------- #
+def test_blank_translation_does_not_blank_the_base() -> None:
+    """An empty override means "unset", not "say nothing"."""
+    cfg = TypeAdapter(BotConfigUnion).validate_python(
+        {"bot_type": "generic", "welcome_message": "base hello",
+         "translations": {"en": {"welcome_message": ""}}}
+    )
+    assert localize(cfg, "en").welcome_message == "base hello"
+
+
+def test_blank_base_copy_falls_back_to_the_model_default() -> None:
+    cfg = TypeAdapter(BotConfigUnion).validate_python(
+        {"bot_type": "generic", "welcome_message": "", "fallback_message": "   "}
+    )
+    copy = localize(cfg, "en")
+    assert copy.welcome_message.strip()
+    assert copy.fallback_message.strip()
+
+
+def test_blank_hello_greeting_falls_back_to_the_default() -> None:
+    """The exact bug: a hello bot whose greeting was cleared sent empty text
+    and Telegram rejected every /start with "message text is empty"."""
+    cfg = TypeAdapter(BotConfigUnion).validate_python(
+        {"bot_type": "hello", "greeting": "", "welcome_message": ""}
+    )
+    copy = localize(cfg, "en")
+    assert copy.greeting.strip()
+    assert copy.welcome_message.strip()

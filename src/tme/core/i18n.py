@@ -13,12 +13,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tme.schemas.bot_config import (
+    BotConfigBase,
     BotConfigUnion,
     EchoBotConfig,
     HelloBotConfig,
     MenuButton,
     Translation,
 )
+
+#: Fallbacks for blank copy — read from the models so the default exists in
+#: exactly one place (a flow that stored "" would otherwise ship empty text).
+_DEFAULT_WELCOME: str = BotConfigBase.model_fields["welcome_message"].default
+_DEFAULT_FALLBACK: str = BotConfigBase.model_fields["fallback_message"].default
+_DEFAULT_GREETING: str = HelloBotConfig.model_fields["greeting"].default
 
 
 @dataclass
@@ -56,12 +63,29 @@ def effective_language(stored: str | None, telegram: str | None) -> str | None:
     return normalized or None
 
 
+def _non_empty(value: str | None) -> str | None:
+    """Treat blank/whitespace copy as "unset" so the chain falls through.
+
+    An empty string is never valid user-facing copy — sending it makes
+    Telegram reject the message ("message text is empty") and the bot looks
+    dead. Owners clear a field in the dashboard, so blanks must behave like
+    "not provided", not like "override with nothing".
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def localize(config: BotConfigUnion, language_code: str | None) -> LocalizedCopy:
     """Resolve the copy for a user's language (base → English → user wins).
 
     Fallback chain, per field: the user's language translation if present,
     else the ``en`` translation if present, else the base flow value. A
     translation may override any subset of fields.
+
+    Blank values (base or translation) are skipped, and a field that ends up
+    blank falls back to the model default — no handler ever sends empty text.
     """
     copy = LocalizedCopy(
         welcome_message=config.welcome_message,
@@ -72,30 +96,35 @@ def localize(config: BotConfigUnion, language_code: str | None) -> LocalizedCopy
     )
 
     # Single-language bots speak ONLY their base copy — no translation layers.
-    if config.single_language:
-        return copy
+    if not config.single_language:
+        # English first, then the user's own language — later layers win.
+        layers = ["en"]
+        user_lang = normalize_language(language_code)
+        if user_lang and user_lang != "en":
+            layers.append(user_lang)
 
-    # English first, then the user's own language — later layers win.
-    layers = ["en"]
-    user_lang = normalize_language(language_code)
-    if user_lang and user_lang != "en":
-        layers.append(user_lang)
+        for code in layers:
+            translation = config.translations.get(code)
+            if translation is None:
+                continue
+            _overlay(copy, translation)
 
-    for code in layers:
-        translation = config.translations.get(code)
-        if translation is None:
-            continue
-        _overlay(copy, translation)
+    # Final guard: blanks never reach the wire.
+    copy.welcome_message = _non_empty(copy.welcome_message) or _DEFAULT_WELCOME
+    copy.fallback_message = _non_empty(copy.fallback_message) or _DEFAULT_FALLBACK
+    if isinstance(config, HelloBotConfig):
+        copy.greeting = _non_empty(copy.greeting) or _DEFAULT_GREETING
+    copy.echo_prefix = copy.echo_prefix or ""
     return copy
 
 
 def _overlay(copy: LocalizedCopy, translation: Translation) -> None:
-    """Apply a translation's non-None fields over the running copy."""
-    if translation.welcome_message is not None:
-        copy.welcome_message = translation.welcome_message
-    if translation.fallback_message is not None:
-        copy.fallback_message = translation.fallback_message
-    if translation.greeting is not None:
+    """Apply a translation's provided (non-blank) fields over the running copy."""
+    if _non_empty(translation.welcome_message) is not None:
+        copy.welcome_message = translation.welcome_message  # type: ignore[assignment]
+    if _non_empty(translation.fallback_message) is not None:
+        copy.fallback_message = translation.fallback_message  # type: ignore[assignment]
+    if translation.greeting is not None and _non_empty(translation.greeting) is not None:
         copy.greeting = translation.greeting
     if translation.echo_prefix is not None:
         copy.echo_prefix = translation.echo_prefix
