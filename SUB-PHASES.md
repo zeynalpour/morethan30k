@@ -313,9 +313,17 @@ page; the blank canvas stays the expert's choice.
       `correct_answers` + a result screen), driven by ONE shared path in
       the dynamic router keyed on config data — the only engine change
       this phase; no per-template handlers.
-- [x] Collected answers persisted to a single shared `collected_responses`
-      table (bot FK, chat, JSON answers) + migration — one table serves
-      feedback, forms, and quizzes.
+- [ ] **Durable answer storage** — collected answers go to a shared
+      `collected_responses` table (bot FK, chat, JSON answers) + migration, so
+      one table serves feedback, forms, and quizzes. **NOT implemented** (no
+      table, model, or migration; migrations stop at `0005_secret_vault`, and
+      `src/`+`tests/` contain zero references). What exists: on completion
+      `steps._summary()` builds an owner-facing recap and `deliver_to_owner()`
+      messages it to the owner — best-effort — and flow state is transient
+      (Redis `flowstate:{bot}:{user}`, 30 min TTL). So delivery works, but that
+      message is the **only** copy: if the owner has no open chat with their
+      bot, or the send fails, the answers are dropped. No history, no dashboard
+      view, no export. Tracked as issue #21.
 - [x] Controller copy for cards and every new message localized through
       `MAIN_BOT_STRINGS` (en + fa; key drift is a test failure);
       emoji-labelled buttons keep their filter variants covered.
