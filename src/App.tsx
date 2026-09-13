@@ -211,8 +211,8 @@ export default function App() {
     })();
   }, []);
 
-  // Archive cleanup, and the S2.3 re-clone reload — both are owner actions
-  // that change the bot row server-side, so each reloads what it touched.
+  // Archive cleanup: a bot deleted in BotFather can't be revived (its token
+  // is gone) — removing it just forgets the row in TME.
   const handleRemoveBot = useCallback(
     async (target: BotRow) => {
       const label = target.title || target.username || `Bot #${target.id}`;
@@ -302,7 +302,11 @@ export default function App() {
       {view === "dashboard" && bot && config && (
         <>
           <BotHeader bot={bot} onToggleActive={handleToggleActive} toggling={toggling} />
+          {/* Keyed on the flow's CONTENT: a re-clone (or any server-side
+              config change) remounts the editor, so its local state can never
+              be stale and write old values back over the new flow. */}
           <ConfigEditor
+            key={`${bot.id}-${JSON.stringify(config.flow)}`}
             config={config}
             bot={bot}
             onSave={handleSaveConfig}
