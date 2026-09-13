@@ -47,10 +47,13 @@ as work progresses; PRs should reference the phase they belong to.
   Supabase writes were rejected: they cannot invalidate the Redis config
   cache, would expose `bots.token` to the browser, and split the source of
   truth.
-- ⚪ **Secret Vault** — encrypt bot tokens & API keys at rest from day one.
-  AI gateway bots need key storage immediately. 🟢 *(S0.3 landed: AES-GCM
-  envelope + `secrets` table + `bots.token_hash` hot-path routing; rollout
-  gradual — active once `VAULT_MASTER_KEY` is set, backfill job pending.)*
+- 🟢 **Secret Vault** — encrypt bot tokens & API keys at rest from day one.
+  AI gateway bots need key storage immediately. *(S0.3 landed: AES-GCM
+  envelope + `secrets` table + `bots.token_hash` hot-path routing.)*
+  ⚠️ **Not yet activated on any stack** — the backfill job (vault existing
+  rows, then drop the plaintext column) and `VAULT_MASTER_KEY` +
+  `VAULT_PEPPER` in `.env` are still pending, so tokens are plaintext at
+  rest today. Tracked in `SUB-PHASES.md` → Open follow-ups.
 
 ---
 
@@ -76,21 +79,31 @@ as work progresses; PRs should reference the phase they belong to.
 
 ---
 
-## Phase 2 — Starter bots & template library  *(your #2)*
+## Phase 2 — Starter bots & template library  *(your #2)* — 🟢 done
 
-- ⚪ Bot creation flow asks "pick a template":
+- 🟢 Bot creation flow asks "pick a template":
   - **Hello World bot** — literally just says hello when you `/start` it.
   - Echo, Feedback collector, Quiz, Simple form, AI gateway (later).
-- ⚪ Template = seed a `BotConfig` from a registry — **no new code per
+- 🟢 Template = seed a `BotConfig` from a registry — **no new code per
   template**. A new bot is a new row, not a new handler.
-- ⚪ **Versioned templates + clone** — bump a template, re-clone into existing
-  bots. 💡 *Hello World today, marketplace tomorrow.*
+- 🟢 **Versioned templates + clone** — bump a template, re-clone into existing
+  bots. *Hello World today, marketplace tomorrow.*
+- 🟢 **Shared conversational primitive** — the Feedback/Quiz/Simple-form
+  templates run as generic flows on ONE `steps` engine path (no per-template
+  handler; the `steps` gate no longer trusts `active_modules` alone).
+
+*(S2.1 registry PR #10, S2.2 picker PR #11, S2.3 versioning + re-clone PR #14,
+`steps` engine PR #17. Sub-phase detail in `SUB-PHASES.md`.)*
 
 ---
 
-## Phase 3 — GOD super-admin & conversational builder  *(your #5)*
+## Phase 3 — GOD super-admin & conversational builder  *(your #5)* — 🟡 next
 
-- ⚪ **GOD role** — `settings.god_telegram_id` (single super-admin) + `/god`
+Sub-phases drafted in `SUB-PHASES.md`: S3.1 GOD role + `/god` panel,
+S3.2 draft → preview → publish lifecycle, S3.3 `/describe` wizard,
+S3.4 LLM co-pilot (stretch).
+
+- 🟡 **GOD role** — `settings.god_telegram_id` (single super-admin) + `/god`
   panel: list all bots, health/status, start/stop, view credits.
 - ⚪ **`/describe` wizard** — GOD explains a bot in plain words, and the main
   bot walks through it step-by-step (name → type → welcome message → buttons →
