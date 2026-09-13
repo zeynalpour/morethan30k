@@ -211,6 +211,28 @@ export default function App() {
     })();
   }, []);
 
+  // Archive cleanup, and the S2.3 re-clone reload — both are owner actions
+  // that change the bot row server-side, so each reloads what it touched.
+  const handleRemoveBot = useCallback(
+    async (target: BotRow) => {
+      const label = target.title || target.username || `Bot #${target.id}`;
+      if (!window.confirm(`Remove ${label} from your dashboard? This cannot be undone.`)) {
+        return;
+      }
+      haptic("medium");
+      try {
+        await api.deleteBot(target.id);
+        setBots((prev) => prev.filter((b) => b.id !== target.id));
+        showToast(`${label} removed`);
+        haptic("light");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Failed to remove bot", "error");
+        haptic("heavy");
+      }
+    },
+    [showToast, haptic]
+  );
+
   // S2.3: a re-clone replaced the flow server-side — reload it so the editor
   // shows the new base copy (translations/single_language were preserved by
   // the backend's whitelist, but the base fields all changed).
@@ -297,7 +319,12 @@ export default function App() {
       )}
 
       {view === "bots" && (
-        <BotList bots={bots} currentBotId={bot?.id} onSelect={handleSwitchBot} />
+        <BotList
+          bots={bots}
+          currentBotId={bot?.id}
+          onSelect={handleSwitchBot}
+          onRemove={handleRemoveBot}
+        />
       )}
     </div>
   );

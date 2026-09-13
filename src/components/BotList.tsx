@@ -12,22 +12,32 @@ interface BotListProps {
   bots: BotRow[];
   currentBotId?: number;
   onSelect: (bot: BotRow) => void;
+  onRemove?: (bot: BotRow) => void;
 }
 
-export function BotList({ bots, currentBotId, onSelect }: BotListProps) {
+function DisplayName({ bot }: { bot: BotRow }) {
+  return <>{bot.title || bot.username || `Bot #${bot.id}`}</>;
+}
+
+export function BotList({ bots, currentBotId, onSelect, onRemove }: BotListProps) {
+  // Bots Telegram no longer knows about (deleted in BotFather) leave the
+  // working list and live in the archive below — visible, but not
+  // masquerading as a live bot.
+  const visible = bots.filter((bot) => bot.state !== "archived");
+  const archived = bots.filter((bot) => bot.state === "archived");
+
   return (
     <div className="px-4 py-4 space-y-3 animate-fadeIn">
       <h2 className="text-lg font-semibold mb-2" style={{ color: "var(--tg-text)" }}>
         Your Bots
       </h2>
-      {bots.length === 0 ? (
+      {visible.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--tg-hint)" }}>
           No bots found.
         </p>
       ) : (
-        bots.map((bot) => {
+        visible.map((bot) => {
           const icon = BOT_TYPE_ICONS[bot.bot_type] || "🤖";
-          const displayName = bot.title || bot.username || `Bot #${bot.id}`;
           const isCurrent = bot.id === currentBotId;
 
           return (
@@ -54,7 +64,7 @@ export function BotList({ bots, currentBotId, onSelect }: BotListProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">
-                  {displayName}
+                  <DisplayName bot={bot} />
                   {!bot.is_active && (
                     <span
                       className="text-[10px] ml-2 px-1.5 py-0.5 rounded-full uppercase tracking-wide"
@@ -79,6 +89,61 @@ export function BotList({ bots, currentBotId, onSelect }: BotListProps) {
             </button>
           );
         })
+      )}
+
+      {archived.length > 0 && (
+        <div className="pt-4 space-y-2">
+          <h3 className="text-sm font-semibold" style={{ color: "var(--tg-hint)" }}>
+            🗄 Archived ({archived.length})
+          </h3>
+          <p className="text-xs" style={{ color: "var(--tg-hint)" }}>
+            These bots were deleted in BotFather, so Telegram no longer accepts their
+            token. Remove them to clean up your dashboard.
+          </p>
+          {archived.map((bot) => (
+            <div
+              key={bot.id}
+              className="rounded-xl p-3 flex items-center gap-3"
+              style={{ background: "var(--tg-secondary-bg)", opacity: 0.75 }}
+            >
+              <div
+                className="flex items-center justify-center rounded-full"
+                style={{
+                  width: 42,
+                  height: 42,
+                  background: "var(--tg-bg)",
+                  fontSize: 22,
+                  flexShrink: 0,
+                }}
+              >
+                🗑
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate" style={{ color: "var(--tg-text)" }}>
+                  <DisplayName bot={bot} />
+                  <span
+                    className="text-[10px] ml-2 px-1.5 py-0.5 rounded-full uppercase tracking-wide"
+                    style={{ background: "rgba(244,67,54,0.18)", color: "#ef5350" }}
+                  >
+                    Deleted
+                  </span>
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--tg-hint)" }}>
+                  {bot.username ? `@${bot.username}` : `ID: ${bot.id}`}
+                </div>
+              </div>
+              {onRemove && (
+                <button
+                  onClick={() => onRemove(bot)}
+                  className="flex-shrink-0 text-sm px-3 py-1.5 rounded-lg"
+                  style={{ background: "rgba(244,67,54,0.15)", color: "#ef5350" }}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
