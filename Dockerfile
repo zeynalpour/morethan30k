@@ -29,6 +29,9 @@ RUN uv sync --frozen --no-dev
 # Migration assets needed at container start.
 COPY alembic.ini ./
 COPY migrations ./migrations
+# Operator tooling (e.g. scripts/vault_backfill.py — the per-stack token
+# backfill; run it with `docker compose exec app python scripts/...`).
+COPY scripts ./scripts
 
 # --- Stage 2: minimal runtime -------------------------------------------
 FROM python:3.12-slim
