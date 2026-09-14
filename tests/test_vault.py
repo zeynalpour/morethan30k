@@ -6,6 +6,7 @@ stack when it's up (mirroring test_integration.py's skip pattern).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 
@@ -13,8 +14,8 @@ from pydantic import SecretStr
 import pytest
 
 from tme.config import settings
+from tme.database.models import Bot
 from tme.services import vault
-from tme.services.managed_bots import _vault_status
 
 
 def _set_vault(monkeypatch: pytest.MonkeyPatch, *, key: str | None, pepper: str | None) -> None:
@@ -25,6 +26,56 @@ def _set_vault(monkeypatch: pytest.MonkeyPatch, *, key: str | None, pepper: str 
 
 def _valid_key() -> str:
     return base64.b64encode(os.urandom(32)).decode()
+
+
+class _EmptyResult:
+    """A result set with no rows (no DB needed for the accessor's fallbacks)."""
+
+    def scalar_one_or_none(self):
+        return None
+
+    def scalars(self):
+        return iter(())
+
+
+class _EmptySession:
+    """Stand-in for AsyncSession whose every query matches nothing."""
+
+    async def execute(self, *_args, **_kwargs):
+        return _EmptyResult()
+
+
+class _VaultRow:
+    """A ``secrets`` row as the accessor sees it."""
+
+    def __init__(self, ref_id: str, ciphertext: bytes, wrapped_dek: bytes) -> None:
+        self.ref_id = ref_id
+        self.ciphertext = ciphertext
+        self.wrapped_dek = wrapped_dek
+
+
+class _SingleRowSession:
+    """Stand-in session whose Secret query returns exactly one row."""
+
+    def __init__(self, row: _VaultRow) -> None:
+        self._row = row
+
+    async def execute(self, *_args, **_kwargs):
+        row = self._row
+
+        class _Result:
+            def scalars(self):
+                return iter([row])
+
+            def scalar_one_or_none(self):
+                return row
+
+        return _Result()
+
+
+def _bot_row(*, bot_id: int = 7, token: str | None = "123:PLAINTEXT") -> Bot:
+    """An in-memory Bot row (no session needed for the accessor's fallbacks)."""
+    return Bot(id=bot_id, token=token, telegram_bot_id=123, owner_id=1)
 
 
 class TestCrypto:
@@ -107,8 +158,56 @@ class TestVaultFallback:
 
     def test_vault_status_off_without_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_vault(monkeypatch, key=None, pepper="p")
-        assert _vault_status() is False
+        assert vault.vault_available() is False
 
     def test_vault_status_on_with_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_vault(monkeypatch, key=_valid_key(), pepper="p")
-        assert _vault_status() is True
+        assert vault.vault_available() is True
+
+
+class TestTokenAccessor:
+    """The one vault-first accessor (S0.3 activation, issue #28)."""
+
+    def test_prefers_the_vault_over_the_plaintext_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vaulted token wins: the database column is only a fallback.
+
+        Stubs the session with a real envelope pair (no DB), so the preference
+        is provable without the integration stack.
+        """
+        _set_vault(monkeypatch, key=_valid_key(), pepper="p")
+        ciphertext, wrapped_dek = vault.encrypt_secret("123:VAULTED")
+        session = _SingleRowSession(_VaultRow("7", ciphertext, wrapped_dek))
+
+        bot = _bot_row(token="123:STALE-PLAINTEXT")
+        assert asyncio.run(vault.resolve_bot_token(session, bot)) == "123:VAULTED"
+
+    def test_falls_back_to_plaintext_when_not_vaulted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_vault(monkeypatch, key=_valid_key(), pepper="p")
+        bot = _bot_row()
+        assert asyncio.run(vault.resolve_bot_token(_EmptySession(), bot)) == "123:PLAINTEXT"
+
+    def test_falls_back_to_plaintext_without_a_master_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No key → no vault query, no crash, plaintext column as today."""
+        _set_vault(monkeypatch, key=None, pepper="p")
+        bot = _bot_row()
+        assert asyncio.run(vault.resolve_bot_token(_EmptySession(), bot)) == "123:PLAINTEXT"
+
+    def test_undecryptable_vault_row_falls_back_instead_of_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A row that no longer decrypts must not break the send path."""
+        _set_vault(monkeypatch, key=_valid_key(), pepper="p")
+        session = _SingleRowSession(_VaultRow("7", b"\x00" * 40, b"\x00" * 40))
+        bot = _bot_row()
+        assert asyncio.run(vault.resolve_bot_token(session, bot)) == "123:PLAINTEXT"
+
+    def test_batch_form_resolves_every_bot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_vault(monkeypatch, key=None, pepper="p")
+        bots = [_bot_row(bot_id=1, token="1:a"), _bot_row(bot_id=2, token=None)]
+        assert asyncio.run(vault.resolve_bot_tokens(_EmptySession(), bots)) == {1: "1:a", 2: None}

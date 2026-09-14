@@ -36,6 +36,17 @@ Snapshot of findings (verified on the live host, 2026-09-12):
   *Done when:* a documented RPO/RTO exists, cron/systemd timer runs green for
   a week, and a restore of `tme-prod_pgdata` into a scratch stack succeeded.
 
+- [ ] **Back up `VAULT_MASTER_KEY` offline, per stack — before vault
+  activation.**
+  Once `bots.token` is cleared (`scripts/vault_backfill.py
+  --apply --clear-plaintext`) the vault is the *only* copy of a bot's token:
+  lose the master key and every tenant bot must be re-created in BotFather.
+  Store each stack's key (32 bytes, base64) outside the host and outside the
+  deploy user's reach, and note which key belongs to which stack.
+  *Done when:* each of dev/test/prod has its key stored offline and a
+  documented restore path; rotation follows the re-wrap-DEKs procedure in
+  `docs/architecture/04-security.md` (§ Secrets).
+
 - [ ] **Close the public Postgres port.**
   The legacy `tme-postgres` publishes `0.0.0.0:5432`. Confirm what still uses
   it, migrate the data if it matters, then stop and remove the legacy stack.

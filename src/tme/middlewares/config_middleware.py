@@ -3,7 +3,9 @@
 Runs once per update on the **tenant** dispatcher, before any filtering. It:
 
 1. Reads the incoming :class:`~aiogram.Bot` from the handler data.
-2. Resolves that bot's config via the Redis read-through cache.
+2. Resolves that bot's config via the Redis read-through cache — keyed by the
+   **token hash** since S0.3 activation (the raw token is passed in and hashed
+   at the cache boundary, so no plaintext token is ever a Redis key).
 3. Injects it as ``bot_config`` so downstream handlers receive it for free.
 
 If the token maps to no active bot (``None``), the update is silently dropped —

@@ -21,15 +21,30 @@ Statuses: **[NOW]** shipped today · **[P x]** lands in phase x ·
 ## Secrets (S0.3)
 
 - **Envelope encryption:** per-row AES-256-GCM DEK, wrapped by a
-  master key from env (`TME_MASTER_KEY`, 32 bytes, base64) — rotate the
+  master key from env (`VAULT_MASTER_KEY`, 32 bytes, base64) — rotate the
   KEK without re-encrypting every row; PG never sees plaintext.
-- `secrets` table (01): `ciphertext BYTEA, kind, ref_id, last_four,
-  rotated_at`. `bots.token` migrates to `token_hash` (HMAC-SHA256 +
-  server pepper) — the webhook hot path looks up by hash, never
-  decrypts; decryption happens only in the adapter at send time.
-- **Legacy migration:** one worker job converts plaintext rows, keeps a
-  `migrated_at` marker; webhook accepts token → hash lookup before the
-  old direct path, so cutover is atomic per row.
+- `secrets` table (01): `ciphertext BYTEA, wrapped_dek BYTEA, kind, ref_id,
+  last_four, rotated_at, created_at/updated_at`. `bots.token` migrates into
+  it; the webhook resolver looks a bot up by `bots.token_hash` (HMAC-SHA256 +
+  server pepper) — the hot path never decrypts, and decryption happens only
+  where the real token is needed (adapter send, liveness probe), through the
+  single accessor `services/vault.resolve_bot_token(s)`.
+- **Legacy migration:** `scripts/vault_backfill.py` (per stack, by the
+  owner, dry-run by default) sets `token_hash`, vaults every token, verifies
+  a decrypt round-trip per row, and only then — with `--clear-plaintext` —
+  NULLs `bots.token`. A failed round-trip aborts the run before anything is
+  cleared. While a stack is un-backfilled the resolver falls back to the
+  plaintext column, so cutover is per row and needs no downtime. `bots.token`
+  is dropped in a later release, once dev/test/prod are all backfilled.
+- **Master-key rotation (re-wrap DEKs only, never re-encrypt payloads):**
+  keep the old key available, decrypt each row's `wrapped_dek` with it,
+  re-wrap the same DEK under the new key, write it back (the `ciphertext`
+  never changes), then verify by decrypting one known row with the new key.
+  Back the new key up offline **before** retiring the old one: a lost
+  `VAULT_MASTER_KEY` makes every vaulted token unrecoverable. The pepper is
+  separate — rotating `VAULT_PEPPER` invalidates all `token_hash` values
+  (derived data), so re-run the backfill (without `--clear-plaintext`) to
+  recompute them.
 - **Never in logs:** secret_token header, bot tokens, AI keys are
   filtered by the logging config (pattern redaction, plus the PII
   redaction middleware below). `…last6` display convention stays [NOW].

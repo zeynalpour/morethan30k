@@ -49,11 +49,14 @@ as work progresses; PRs should reference the phase they belong to.
   truth.
 - 🟢 **Secret Vault** — encrypt bot tokens & API keys at rest from day one.
   AI gateway bots need key storage immediately. *(S0.3 landed: AES-GCM
-  envelope + `secrets` table + `bots.token_hash` hot-path routing.)*
-  ⚠️ **Not yet activated on any stack** — the backfill job (vault existing
-  rows, then drop the plaintext column) and `VAULT_MASTER_KEY` +
-  `VAULT_PEPPER` in `.env` are still pending, so tokens are plaintext at
-  rest today. Tracked in `SUB-PHASES.md` → Open follow-ups.
+  envelope + `secrets` table. Activation — hash routing by `bots.token_hash`,
+  the vault-first token accessor, `bots.token` nullable and the backfill job
+  `scripts/vault_backfill.py` — landed with issue #28.)*
+  ⚠️ **Not yet activated on any stack** — no stack has `VAULT_MASTER_KEY` +
+  `VAULT_PEPPER` in `.env`, so tokens are still plaintext at rest and the
+  backfill has not been run anywhere. The switch is per stack and by the
+  owner; the plaintext column is dropped only after dev/test/prod are all
+  backfilled. Tracked in `SUB-PHASES.md` → Open follow-ups.
 
 ---
 

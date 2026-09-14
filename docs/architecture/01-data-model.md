@@ -236,12 +236,37 @@ marketplace does." So today:
 
 ### Secrets (S0.3) [P0/S0.3]
 
-- `secrets` — kind (`bot_token|api_key|vault`), ref_id (bot/owner),
-  ciphertext BYTEA (envelope: AES-GCM, DEK wrapped by a master key from
-  env/KMS), last_four (for UI "…ab12"), rotated_at. `bots.token`
-  migrates here; webhook routing keeps a `token_hash` (HMAC-SHA256 with
-  a server pepper) in `bots` so the hot lookup never decrypts anything.
-  Plaintext legacy rows are migrated once, in place.
+- `secrets` — kind (`bot_token|api_key`), ref_id (bot id / owner id),
+  ciphertext BYTEA (envelope: AES-256-GCM payload + one wrapped DEK per
+  row, the DEK wrapped by `VAULT_MASTER_KEY` from env), last_four (for
+  UI "…ab12"), rotated_at, created_at/updated_at.
+- `bots.token_hash` — peppered HMAC-SHA256 of the routing token, unique.
+  **The webhook resolver looks up by hash first** (`services/bot_lookup.py`):
+  one indexed SELECT, no decryption on the hot path, and the Redis config
+  cache is keyed `botcfg:{token_hash}`. The raw token is what callers hold
+  (it is in the webhook URL) — hashing happens at that boundary.
+- **`bots.token` is transitional, not the truth.** It is the *fallback* the
+  resolver tries when the hash matches no row, so a stack that has not been
+  backfilled yet keeps serving. Lifecycle: nullable ([NOW], migration
+  `0006`) → populated until a stack is backfilled
+  (`scripts/vault_backfill.py --apply`, per stack, by the owner) → cleared
+  with `--clear-plaintext` once every row verified a decrypt round-trip →
+  **column dropped in a later release**, after dev/test/prod are all done.
+  No stack is switched over by a migration: data changes are per stack and
+  verified, never applied to every stack by container start.
+- **Reading the real token** (liveness probes, adapter sends, cache
+  invalidation keys) goes through ONE accessor —
+  `services/vault.resolve_bot_token(s)` — vault first, plaintext column as
+  the rollout fallback. Nothing else reads `Bot.token` directly.
+- **Master-key rotation:** re-wrap DEKs only, never re-encrypt payloads.
+  Keep the old key, decrypt each `wrapped_dek` with it, re-wrap the same DEK
+  with the new key, write it back (same row, same ciphertext), then verify by
+  decrypting one known row with the new key and keep the new key backed up
+  offline *before* dropping the old one. Losing `VAULT_MASTER_KEY` makes every
+  vaulted token unrecoverable — back it up per stack before switching over.
+  Rotating `VAULT_PEPPER` is separate and cheaper: it invalidates every
+  `token_hash` (derived data, safe to recompute), so re-run
+  `scripts/vault_backfill.py --apply` afterwards to rewrite the hashes.
 
 ### GOD & audit (F1, F4) [P3]
 
@@ -262,7 +287,7 @@ explicitly rather than left implicit.
 | ----- | ----- | ------ |
 | P0 foundation | `users`, `bots`, `bot_configs`, `secrets`, `dashboard_auth_tokens` | ✅ exist |
 | P1 multilanguage | `user_languages` | ✅ exists |
-| P2 templates + flows | in-code registry (no table), flow rider `template:{id,version}`, Redis `flowstate` (**no table**), `collected_responses` | ⚠️ **`collected_responses` missing** — issue #21, migration `0006` |
+| P2 templates + flows | in-code registry (no table), flow rider `template:{id,version}`, Redis `flowstate` (**no table**), `collected_responses` | ⚠️ **`collected_responses` missing** — issue #21, migration `0007` |
 | P3 GOD + builder | `audit_log`, `bot_config_history`, `bot_configs.status` + partial unique index | ⚠️ design fixed here; migrations with S3.x |
 | P4 AI gateway | `secrets` (kind `api_key`), `ai_usage`, `credit_ledger`, `purchases` | design ready |
 | P5 workflow engine | `jobs` (worker spine), `chat_variables`, `faq_entries` | design ready |
@@ -278,14 +303,17 @@ buried inside a feature PR.
 
 - `0001` initial schema ✅ · `0002` bot_type ✅ · `0003` dashboard_auth_tokens ✅
   · `0004` user_languages ✅ · `0005` secret_vault ✅
-- `0006` **`collected_responses`** (issue #21) ← the only *overdue* migration
-- `0007` `bot_config_history` + `audit_log` (S3.x, with the config lifecycle)
-- `0008` `bot_configs.status` + partial unique index (S3.2 drafts)
-- `0009` `jobs` (worker spine) — first phase that needs a background worker
-- `0010` credits/metering (`credit_ledger`, `purchases`) — Phase 4
-- `0011` `chat_variables` (A4) · `0012` `ai_usage` (D4) · `0013` `chat_events`
-  partitions + `daily_bot_stats` (E5) · `0014` `blocked_users` /
-  `incident_reports` (P6) · `0015` marketplace tables (P7)
+- `0006` **vault activation** — `bots.token` nullable + the `secrets`
+  timestamps 0005 forgot (S0.3, issue #28) ✅
+- `0007` **`collected_responses`** (issue #21) ← the only *overdue* migration
+- `0008` `bot_config_history` + `audit_log` (S3.x, with the config lifecycle)
+- `0009` `bot_configs.status` + partial unique index (S3.2 drafts)
+- `0010` `jobs` (worker spine) — first phase that needs a background worker
+- `0011` credits/metering (`credit_ledger`, `purchases`) — Phase 4
+- `0012` `chat_variables` (A4) · `0013` `ai_usage` (D4) · `0014` `chat_events`
+  partitions + `daily_bot_stats` (E5) · `0015` `blocked_users` /
+  `incident_reports` (P6) · `0016` marketplace tables (P7)
+- later: **drop `bots.token`** — once dev/test/prod are backfilled and verified
 
 The exact numbers may shift as phases land; the **order** is the contract.
 

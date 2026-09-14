@@ -16,7 +16,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tme.core.cache import invalidate_bot_config
+from tme.core.cache import invalidate_bot_config, invalidate_bot_config_hash
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotType, User
@@ -29,7 +29,11 @@ from tme.services.bot_health import (
     probe_bots,
 )
 from tme.services.managed_bots import _default_config_for, reclone_bot
-from tme.services.vault import delete_bot_token
+from tme.services.vault import (
+    delete_bot_token,
+    resolve_bot_token,
+    resolve_bot_tokens,
+)
 from tme.templates import (
     get_template,
     list_templates,
@@ -194,6 +198,22 @@ async def _reject_if_archived(bot: BotModel) -> None:
         )
 
 
+async def _drop_config_cache(*, token: str | None, token_hash: str | None) -> None:
+    """Refresh a bot's config cache after a write, hash-keyed (S0.3).
+
+    The raw token is the normal input (hashing happens at the cache boundary).
+    A row whose plaintext has already been cleared still carries ``token_hash``,
+    so invalidation never silently no-ops — that is the only case the
+    hash-form entry point exists for.
+    """
+    if token is not None:
+        await invalidate_bot_config(token)
+    elif token_hash is not None:
+        await invalidate_bot_config_hash(token_hash)
+    else:  # pragma: no cover - neither a token nor a hash: nothing to drop
+        logger.warning("Cannot invalidate config cache: no token or hash available")
+
+
 # --------------------------------------------------------------------------- #
 # Endpoints
 # --------------------------------------------------------------------------- #
@@ -215,7 +235,15 @@ async def list_bots(auth: int = Depends(_require_auth)) -> list[BotSummary]:
             .order_by(BotModel.created_at.desc())
         )
         bots = list(result.scalars())
-        alive = await probe_bots([(b.id, b.token) for b in bots if b.is_active])
+        # Vault-first token accessor (S0.3): the plaintext column is the
+        # transitional fallback, never read directly here.
+        tokens = await resolve_bot_tokens(session, bots)
+        probes: list[tuple[int, str]] = []
+        for bot in bots:
+            token = tokens.get(bot.id) if bot.is_active else None
+            if token:
+                probes.append((bot.id, token))
+        alive = await probe_bots(probes)
         return [_summarize(bot, alive=alive.get(bot.id)) for bot in bots]
 
 
@@ -226,7 +254,8 @@ async def get_bot(bot_id: int, auth: int = Depends(_require_auth)) -> BotSummary
         bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None:
             raise HTTPException(status_code=404, detail="Bot not found")
-        alive = await bot_is_alive(bot.id, bot.token) if bot.is_active else None
+        token = await resolve_bot_token(session, bot) if bot.is_active else None
+        alive = await bot_is_alive(bot.id, token) if token else None
         return _summarize(bot, alive=alive)
 
 
@@ -266,9 +295,12 @@ async def update_bot_config(
         await _reject_if_archived(bot)
         bot.config.flow = parsed.model_dump()
         bot.bot_type = parsed.bot_type
-        token = bot.token  # captured before the session closes
+        # Vault-first (S0.3): the real token is what invalidates the hash-keyed
+        # cache entry, so it is resolved before the session closes.
+        token = await resolve_bot_token(session, bot)
+        token_hash_value = bot.token_hash
 
-    await invalidate_bot_config(token)
+    await _drop_config_cache(token=token, token_hash=token_hash_value)
     logger.info("Updated config for bot id=%s (owner tg=%s)", bot_id, auth)
     return bot.config.flow
 
@@ -310,11 +342,12 @@ async def update_bot(
 
         # Re-probing on toggle keeps the response consistent with the list
         # endpoint (a bot archived by Telegram stays archived when paused).
-        alive = await bot_is_alive(bot.id, bot.token) if bot.is_active else None
+        token = await resolve_bot_token(session, bot)
+        alive = await bot_is_alive(bot.id, token) if bot.is_active and token else None
         summary = _summarize(bot, alive=alive)
-        token = bot.token  # captured before the session closes
+        token_hash_value = bot.token_hash  # captured before the session closes
 
-    await invalidate_bot_config(token)
+    await _drop_config_cache(token=token, token_hash=token_hash_value)
     logger.info(
         "Updated bot id=%s (owner tg=%s): active=%s type=%s",
         bot_id,
@@ -460,11 +493,12 @@ async def delete_bot(bot_id: int, auth: int = Depends(_require_auth)) -> Respons
         bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None:
             raise HTTPException(status_code=404, detail="Bot not found")
-        token = bot.token  # captured before the session closes
+        token = await resolve_bot_token(session, bot)
+        token_hash_value = bot.token_hash  # captured before the session closes
         await delete_bot_token(session, bot_id=bot_id)
         await session.delete(bot)
 
     await forget_bot_liveness(bot_id)
-    await invalidate_bot_config(token)
+    await _drop_config_cache(token=token, token_hash=token_hash_value)
     logger.info("Deleted bot id=%s (owner tg=%s)", bot_id, auth)
     return Response(status_code=204)

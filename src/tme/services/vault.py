@@ -9,7 +9,10 @@ every payload, and Postgres never sees plaintext.
 Lookup on the webhook hot path is by ``token_hash`` — HMAC-SHA256 of the
 token with a server pepper — so resolving a bot from an incoming update
 never decrypts anything. Decryption happens lazily in the adapter path
-(when we actually need to call Telegram with the token).
+(when we actually need to call Telegram with the token): that is what
+:func:`resolve_bot_tokens` (and its single-bot form
+:func:`resolve_bot_token`) is the ONE place for — vault first, with the
+transitional plaintext column as the fallback while stacks are backfilled.
 
 Design mirrors docs/architecture/04-security.md (§ Secrets).
 """
@@ -17,6 +20,7 @@ Design mirrors docs/architecture/04-security.md (§ Secrets).
 from __future__ import annotations
 
 import base64
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 import hashlib
@@ -30,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tme.config import settings
 from tme.core.logging import get_logger
-from tme.database.models import Secret
+from tme.database.models import Bot, Secret
 
 logger = get_logger(__name__)
 
@@ -185,11 +189,82 @@ async def load_bot_token(session: AsyncSession, *, bot_id: int) -> str | None:
 
 
 async def delete_bot_token(session: AsyncSession, *, bot_id: int) -> None:
-    """Remove a tenant bot's vaulted token (the bot itself is being deleted)."""
+    """Remove a bot's vaulted token (the bot itself is being deleted)."""
     await session.execute(
         delete(Secret).where(Secret.kind == SecretKind.BOT_TOKEN, Secret.ref_id == str(bot_id))
     )
     logger.debug("Removed vaulted token for bot id=%s", bot_id)
+
+
+async def has_bot_token(session: AsyncSession, *, bot_id: int) -> bool:
+    """True if a vault row exists for this bot — existence only, no decryption.
+
+    Deliberately cheap (one indexed SELECT, no master key needed) so callers
+    like the backfill job can plan work without pulling ciphertexts through
+    the crypto layer.
+    """
+    result = await session.execute(
+        select(Secret.id).where(Secret.kind == SecretKind.BOT_TOKEN, Secret.ref_id == str(bot_id))
+    )
+    return result.scalar_one_or_none() is not None
+
+
+# --- The token accessor (S0.3 activation) ------------------------------------
+
+
+def vault_available() -> bool:
+    """True if the master key is present and well-formed (reads/writes possible)."""
+    try:
+        _master_key()
+    except ValueError as exc:
+        logger.debug("Vault unavailable: %s", exc)
+        return False
+    return True
+
+
+async def _vaulted_tokens(session: AsyncSession, bot_ids: Sequence[int]) -> dict[int, str]:
+    """Decrypted tokens for the given bots, best-effort (one query, no N+1).
+
+    Never raises for a single bad row: a ciphertext that no longer decrypts is
+    logged and treated as "not vaulted" so the caller can still fall back to
+    the transitional plaintext column (fail-open, like the liveness probes).
+    The backfill job is the component that is *strict* about round-trips.
+    """
+    if not bot_ids or not vault_available():
+        return {}
+
+    result = await session.execute(
+        select(Secret).where(
+            Secret.kind == SecretKind.BOT_TOKEN,
+            Secret.ref_id.in_([str(bot_id) for bot_id in bot_ids]),
+        )
+    )
+    tokens: dict[int, str] = {}
+    for row in result.scalars():
+        try:
+            tokens[int(row.ref_id)] = decrypt_secret(row.ciphertext, row.wrapped_dek)
+        except Exception as exc:  # any crypto error: skip this row, fall back
+            logger.warning("Vaulted token ref_id=%s failed to decrypt: %s", row.ref_id, exc)
+    return tokens
+
+
+async def resolve_bot_tokens(session: AsyncSession, bots: Sequence[Bot]) -> dict[int, str | None]:
+    """The **one** token accessor: vault first, plaintext column as the fallback.
+
+    Use this on the paths that genuinely need the *real* token to call Telegram
+    (liveness probes, adapter sends, cache invalidation keys) — never read
+    ``Bot.token`` directly, so the transitional fallback stays in one place and
+    disappears with the column. Returns ``{bot_id: token}``; a bot neither
+    vaulted nor carrying a plaintext token maps to ``None``.
+    """
+    ids = [bot.id for bot in bots]
+    vaulted = await _vaulted_tokens(session, ids)
+    return {bot.id: vaulted.get(bot.id) or bot.token for bot in bots}
+
+
+async def resolve_bot_token(session: AsyncSession, bot: Bot) -> str | None:
+    """Single-bot form of :func:`resolve_bot_tokens`."""
+    return (await resolve_bot_tokens(session, [bot])).get(bot.id)
 
 
 def new_api_key() -> str:

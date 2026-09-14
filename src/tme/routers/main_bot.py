@@ -40,6 +40,7 @@ from tme.config import settings
 from tme.core.i18n import effective_language
 from tme.core.logging import get_logger
 from tme.core.main_i18n import MAIN_BOT_STRINGS, supported_languages, tr
+from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.bot_health import probe_bots
@@ -50,6 +51,7 @@ from tme.services.user_language import (
     get_user_language,
     set_user_language,
 )
+from tme.services.vault import resolve_bot_tokens
 from tme.templates import TemplateSpec, get_template, list_templates
 
 logger = get_logger(__name__)
@@ -398,7 +400,15 @@ async def _show_my_bots(bot: Bot, owner_id: int, language_code: str | None = Non
     """
     bots = await list_bots_for_owner(owner_telegram_id=owner_id)
     if bots:
-        probes = [(b.id, b.token) for b in bots if getattr(b, "token", None)]
+        # Vault-first token accessor (S0.3) — the plaintext column is the
+        # transitional fallback and is never read directly here.
+        async with session_scope() as session:
+            tokens = await resolve_bot_tokens(session, bots)
+        probes: list[tuple[int, str]] = []
+        for row in bots:
+            token = tokens.get(row.id)
+            if token:
+                probes.append((row.id, token))
         alive = await probe_bots(probes) if probes else {}
         bots = [b for b in bots if alive.get(b.id, True)]
     if not bots:
