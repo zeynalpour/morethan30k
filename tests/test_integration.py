@@ -193,6 +193,15 @@ def test_provision_then_dashboard_lists_and_reads_config(test_stack, monkeypatch
 def test_config_patch_goes_live_through_cache(test_stack, monkeypatch) -> None:
     bot_row = _provision(test_stack, monkeypatch)
 
+    # The fixture bot's token is fake, so a real liveness probe marks it
+    # archived — and the write-path guard refuses edits on archived bots
+    # (a bot deleted in BotFather must not be editable). This test is about
+    # the config cache path, so pin the cached verdict to "unknown".
+    async def _unknown_verdict(_bot_id):
+        return None
+
+    monkeypatch.setattr("tme.api.routes.cached_bot_liveness", _unknown_verdict)
+
     resp = test_stack(
         _api(
             "PATCH",

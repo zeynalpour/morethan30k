@@ -42,6 +42,7 @@ from tme.core.logging import get_logger
 from tme.core.main_i18n import MAIN_BOT_STRINGS, supported_languages, tr
 from tme.database.models import Bot as BotModel
 from tme.schemas.bot_config import BotConfigUnion
+from tme.services.bot_health import probe_bots
 from tme.services.dashboard import list_bots_for_owner
 from tme.services.managed_bots import provision_managed_bot
 from tme.services.user_language import (
@@ -385,8 +386,21 @@ def _bots_keyboard(bots: list[BotModel], language_code: str | None = None) -> In
 
 
 async def _show_my_bots(bot: Bot, owner_id: int, language_code: str | None = None) -> None:
-    """Send the owner's bot list with a settings button per bot."""
+    """Send the owner's bot list with a settings button per bot.
+
+    Archived bots are filtered out: a bot whose token Telegram rejected was
+    deleted in BotFather, so listing it (and offering an edit button for it)
+    contradicts the delete the owner performed. Verdicts are cached by
+    :mod:`tme.services.bot_health`, so this costs one probe per unseen bot.
+
+    Fails open — a bot with no verdict stays listed rather than disappearing
+    because a probe was inconclusive.
+    """
     bots = await list_bots_for_owner(owner_telegram_id=owner_id)
+    if bots:
+        probes = [(b.id, b.token) for b in bots if getattr(b, "token", None)]
+        alive = await probe_bots(probes) if probes else {}
+        bots = [b for b in bots if alive.get(b.id, True)]
     if not bots:
         await bot.send_message(
             chat_id=owner_id,
