@@ -188,6 +188,17 @@ each other — roughly in this order (effort: S/M/L):
 - **F5. Sandboxed template review** — a marketplace template can't be
   published until it passes: schema validation + dry-run (C1c) + no
   outbound-webhook allowlist violation. Quality gate for B8. 💡
+- **F6. Managed-bot lifecycle: revoke-on-delete** — the Bot API has no
+  "delete managed bot" call (only `getManagedBotToken` /
+  `replaceManagedBotToken` / access settings), so today a dashboard delete
+  drops the row locally while the bot lives on in Telegram, still holding
+  its username, its webhook still registered and updates still arriving at
+  us with no token to answer them. Make delete actually *kill* it: call
+  `replaceManagedBotToken` (revoke) + clear the webhook, then hand off to
+  the owner with a deep link — `@BotFather → /deletebot` frees the username
+  and is owner-only. The liveness probe then confirms `archived`. Tables:
+  none new (`bots`, the `secrets` vault row, the liveness cache). We can
+  kill it; only the owner can delete it. 💡 (effort S)
 
 ## G. Monetization & growth
 
@@ -409,4 +420,7 @@ North-star metric: **time-to-live-bot ≤ 60s** for the simplest path.
   JSON/API/MCP), onboarding (M2), trust (M3), the describe-it engine
   (M4), reliability non-negotiables (M5), growth loops (M6). 21 new
   ideas; north-star metric: time-to-live-bot ≤ 60s.
+- **v12 (iteration 11)** — + F6 managed-bot lifecycle (revoke-on-delete:
+  the Bot API can kill a managed bot but can never delete it — only the
+  owner can, via @BotFather's /deletebot).
 

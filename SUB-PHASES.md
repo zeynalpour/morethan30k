@@ -233,7 +233,15 @@ tenant bots read — one pick localizes the whole platform for that owner.
 
 ---
 
-## Phase 2 — Starter bots & template library
+## Phase 2 — Starter bots & template library  *(done)*
+
+**Landed:** S2.1 registry (PR #10), S2.2 creation-flow picker (PR #11), S2.3
+versioned templates + re-clone + dashboard provenance panel (PR #14), all
+running on the shared `steps` engine (PR #17) in `src/tme/services/steps.py`
+— one engine path, no per-template handlers, exactly as the north star
+requires. Follow-ups found in live dev testing and fixed: the steps gate no
+longer trusts `active_modules` alone, and blank copy can no longer blank a
+reply (PR #19).
 
 ### S2.1 — Template registry core (versioned, in-code)
 
@@ -251,24 +259,24 @@ not need one.
 
 **Checklist**
 
-- [ ] `src/tme/templates/` package: `TemplateSpec` (id, version, title,
+- [x] `src/tme/templates/` package: `TemplateSpec` (id, version, title,
       blurb, bot_type, seed flow dict) + the registry module holding the
       versioned entries.
-- [ ] Launch set of five templates: **Hello World**, **Echo**, **Feedback
+- [x] Launch set of five templates: **Hello World**, **Echo**, **Feedback
       collector**, **Quiz**, **Simple form**. Hello/Echo reuse the existing
       config variants; the conversational three are generic flows whose
       `steps` data the shared engine consumes (S2.2). AI gateway stays out
       — "later" per ROADMAP.
-- [ ] Registry API: list (picker source), lookup by id, latest-version
+- [x] Registry API: list (picker source), lookup by id, latest-version
       resolution — one source of truth, so picker UI and template data
       cannot drift.
-- [ ] Every entry's seed flow validates against `BotConfigUnion`
+- [x] Every entry's seed flow validates against `BotConfigUnion`
       (round-trips through `parse_bot_config`); a malformed template fails
       its own test, never a live user.
-- [ ] Template provenance recorded on the seeded config (`template_id` +
+- [x] Template provenance recorded on the seeded config (`template_id` +
       `template_version`) so S2.3 knows which seed a bot came from; exact
       storage shape (flow rider vs. column) is the Architect's call.
-- [ ] Tests: ids unique, versions monotonic per id, every seed parses and
+- [x] Tests: ids unique, versions monotonic per id, every seed parses and
       the engine can run it; provisioning from a template seeds exactly
       the template's flow.
 
@@ -292,26 +300,34 @@ page; the blank canvas stays the expert's choice.
 
 **Checklist**
 
-- [ ] Picker keyboard derives from the registry list (same single-source
+- [x] Picker keyboard derives from the registry list (same single-source
       pattern as `_TYPE_CHOICES`); card callback data keyed by template
       id; a "start from scratch" card seeds today's generic default (the
       Hello World / Echo cards subsume the old type buttons).
-- [ ] `provision_managed_bot` accepts a template id and seeds the chosen
+- [x] `provision_managed_bot` accepts a template id and seeds the chosen
       template's flow instead of the bare per-type default; cache priming
       mirrors exactly what was persisted; provenance written per S2.1.
-- [ ] Shared conversational primitive for the Feedback/Quiz/Simple-form
+- [x] Shared conversational primitive for the Feedback/Quiz/Simple-form
       templates: a `steps` array in the generic flow (prompt → free-text
       or option-button answer → next step; quiz steps carry
       `correct_answers` + a result screen), driven by ONE shared path in
       the dynamic router keyed on config data — the only engine change
       this phase; no per-template handlers.
-- [ ] Collected answers persisted to a single shared `collected_responses`
-      table (bot FK, chat, JSON answers) + migration — one table serves
-      feedback, forms, and quizzes.
-- [ ] Controller copy for cards and every new message localized through
+- [ ] **Durable answer storage** — collected answers go to a shared
+      `collected_responses` table (bot FK, chat, JSON answers) + migration, so
+      one table serves feedback, forms, and quizzes. **NOT implemented** (no
+      table, model, or migration; migrations stop at `0005_secret_vault`, and
+      `src/`+`tests/` contain zero references). What exists: on completion
+      `steps._summary()` builds an owner-facing recap and `deliver_to_owner()`
+      messages it to the owner — best-effort — and flow state is transient
+      (Redis `flowstate:{bot}:{user}`, 30 min TTL). So delivery works, but that
+      message is the **only** copy: if the owner has no open chat with their
+      bot, or the send fails, the answers are dropped. No history, no dashboard
+      view, no export. Tracked as issue #21.
+- [x] Controller copy for cards and every new message localized through
       `MAIN_BOT_STRINGS` (en + fa; key drift is a test failure);
       emoji-labelled buttons keep their filter variants covered.
-- [ ] Tests: picker renders one card per registry template; provisioning
+- [x] Tests: picker renders one card per registry template; provisioning
       seeds the chosen flow; each conversational template's seed drives
       the expected behaviour through the shared router; existing
       generic/hello/echo behaviour unchanged.
@@ -339,22 +355,22 @@ which template a bot came from and whether a newer version exists.
 
 **Checklist**
 
-- [ ] Version-bump mechanics in the registry: per-id versioning, latest
+- [x] Version-bump mechanics in the registry: per-id versioning, latest
       resolution; a bump = one data edit (+ its tests).
-- [ ] Re-clone service: apply a template's latest seed to an existing
+- [x] Re-clone service: apply a template's latest seed to an existing
       bot's base flow, preserve `translations` + `single_language`,
       update provenance to the new version; the flow is revalidated
       through `BotConfigUnion` before persisting.
-- [ ] Dashboard "Reset to template" action: shows the bot's provenance
+- [x] Dashboard "Reset to template" action: shows the bot's provenance
       (template + version, "update available" when the registry is ahead),
       asks for confirmation, then re-clones; owner-scoped like every
       `/api/bots*` route; cache invalidated on write.
-- [ ] Bots without provenance can adopt a template through the same path
+- [x] Bots without provenance can adopt a template through the same path
       (pre-Phase-2 and scratch bots are not stranded); `bot_type` follows
       the template, reusing the existing type-switch write path.
-- [ ] No silent auto-updates — live bots change only on an explicit owner
+- [x] No silent auto-updates — live bots change only on an explicit owner
       action.
-- [ ] Tests: re-clone preserves translations/single-language and bumps
+- [x] Tests: re-clone preserves translations/single-language and bumps
       provenance; cache invalidated; another owner's bot → 404; type
       follows template on adoption.
 
@@ -372,19 +388,124 @@ which template a bot came from and whether a newer version exists.
 
 ## Next milestones (brief)
 
+- **Phase 3 — GOD super-admin & conversational builder** (the active phase;
+  sub-phases drafted below).
 - **Phase 8 — Per-user bot settings** — extended vision beyond the S0.4 MVP:
   config history/rollback, template gallery, dashboard analytics.
 
-Full checklists for these phases are written here when we start them.
+Full checklists for later phases are written here when we start them.
+
+---
+
+## Phase 3 — GOD super-admin & conversational builder
+
+### S3.1 — GOD role + `/god` panel
+
+**Context.** `settings.god_telegram_id` names a single super-admin. Today
+every owner is scoped to their own bots; GOD needs the platform-wide view
+(all bots, health, state, credits) without weakening owner isolation.
+
+**Checklist**
+
+- [ ] `settings.god_telegram_id` honoured in a `_require_god` dependency;
+      GOD identities resolve like owners but see across tenants.
+- [ ] `/god` panel: paginated bot list (owner, type, state, created), per-bot
+      detail (webhook, last error, config version), start/stop.
+- [ ] Admin API surface (`/api/god/*`) owner-scoped by the same auth, so the
+      dashboard can grow a GOD view without new auth machinery.
+- [ ] Localized (en + fa) like the rest of the controller; key drift fails a test.
+- [ ] Tests: non-GOD gets 403 on every admin path; GOD sees other owners' bots;
+      no token/secret ever crosses the boundary.
+
+**Acceptance criteria**
+
+- GOD can see and operate every bot from one panel; a normal owner cannot
+  reach a single admin path.
+
+### S3.2 — Draft → Preview → Publish lifecycle
+
+**Context.** Every config write today goes live immediately. The lifecycle is
+the safety net the conversational builder (S3.3) and the LLM co-pilot (S3.4)
+depend on: nothing unreviewed ever reaches a live bot.
+
+**Checklist**
+
+- [ ] Draft config storage (draft rider on the bot row or a `bot_config_drafts`
+      table); the engine keeps reading the published config only.
+- [ ] Owner-only preview chat: the owner messages their own bot and it runs the
+      DRAFT flow (sandbox adapter, no real sends to third parties).
+- [ ] Publish action: validate through `BotConfigUnion`, promote draft →
+      published, invalidate the Redis config cache (same invariant as every
+      write); discard action for the draft.
+- [ ] Dashboard/controller surfaces the draft state ("unpublished changes") and
+      refuses to leave a bot silently half-published.
+- [ ] Tests: live traffic never sees draft copy; publish is atomic + cache
+      invalidated; preview runs the draft, not the published flow.
+
+**Acceptance criteria**
+
+- A drafted change can be previewed end-to-end and either published (live
+  within seconds) or discarded — and live users never see an unreviewed edit.
+
+### S3.3 — `/describe` wizard (conversational builder)
+
+**Context.** ROADMAP's wizard: talk the bot into existence, step by step
+(name → type → welcome → buttons → language), ending in a deployable draft.
+
+**Checklist**
+
+- [ ] Multi-step conversation state (per owner, Redis-backed) with a
+      cancel/restart path at every step.
+- [ ] Each answer maps onto the existing `BotConfig` fields and templates
+      (S2.x registry) — the wizard writes a DRAFT (S3.2), never live.
+- [ ] Every controller message localized (en + fa).
+- [ ] Tests: full walkthrough produces a valid draft; abandoning mid-way leaves
+      no half-written live config.
+
+**Acceptance criteria**
+
+- A non-technical owner goes from `/describe` to a previewable draft without
+  touching JSON, and nothing goes live until they publish.
+
+### S3.4 — LLM co-pilot (stretch)
+
+**Context.** Free-text description → complete draft flow JSON → owner approves
+piece by piece. Depends on S3.2 (draft/publish) and the Phase 4 AI gateway for
+the model call; kept stretch until those land.
+
+**Checklist**
+
+- [ ] `describe → draft flow JSON` call through the gateway, validated through
+      `BotConfigUnion` before it is ever stored.
+- [ ] Owner reviews each proposed piece in plain words; approval is explicit.
+- [ ] Tests: malformed model output is rejected, never persisted.
+
+**Acceptance criteria**
+
+- An LLM can propose a whole draft, and a human always approves it before
+  anything is publishable.
+
+---
+
+## Open follow-ups carried from earlier phases
+
+- **S0.3 vault activation** — code landed (envelope encryption, `secrets`
+  table, `token_hash` hot-path lookup), but no stack has `VAULT_MASTER_KEY`
+  set, so every token is still plaintext in `bots.token` (dev: 9/9 rows).
+  Remaining: backfill job (vault all existing rows + null the plaintext
+  column, migration 0006) and set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in
+  .env across dev/test/prod.
 
 ---
 
 ## Current focus
 
-**→ Phase 2 — Starter bots & template library** (the active phase).
-Phase 0 (S0.1–S0.4) and Phase 1 (S1.1–S1.3) are **done**; the S0.3
-Secret Vault landed and its follow-up PR #4 is open awaiting owner
-review, alongside PR #3 (E2E Telegram harness). The three Phase 2
-sub-phases — S2.1 template registry core, S2.2 template picker in the
-creation flow, S2.3 versioned templates + re-clone — are planned above;
-S2.1 is the next focus.
+**→ Phase 3 — GOD super-admin & conversational builder** (the active phase).
+
+Phase 0 (S0.1–S0.4), Phase 1 (S1.1–S1.3) and **Phase 2 (S2.1–S2.3) are
+done** — templates shipped end-to-end: a five-entry registry (hello_world,
+echo, feedback_collector, quiz, simple_form), the creation-flow picker, and
+versioned re-clone + the dashboard provenance panel, all carried by STEP 4's
+shared `steps` engine (one engine path, zero per-template handlers).
+S3.1 (GOD role + `/god` panel) is the next focus; the S0.3 vault activation
+above is a small, high-value item that can be picked up at any time.
