@@ -264,6 +264,68 @@ buried inside a feature PR.
 
 The exact numbers may shift as phases land; the **order** is the contract.
 
+## Working with the schema (runbook for agents and contributors)
+
+### Adding a table — the order is not optional
+
+1. **Model** — `src/tme/database/models.py`: SQLAlchemy 2.0 style, `Mapped[...]`
+   annotations, `__tablename__` snake_case, FKs with an explicit `ondelete`.
+2. **Migration** — `migrations/versions/000N_snake_name.py`, next free number.
+   Alembic is applied automatically at container start
+   (`CMD ["sh","-c","alembic upgrade head && exec uvicorn ..."]`) and in CI
+   before tests, so there is no manual step — which also means a broken
+   migration blocks the boot. Test the upgrade path against a fresh DB.
+3. **Write path** — one write site, in the service that owns the data. Never
+   on the webhook hot path (that touches only `bots`, `bot_configs`, Redis).
+4. **Read path** — owner-scoped API route (`/api/bots/{bot_id}/...`) so
+   ownership checks are inherited, never re-implemented per endpoint.
+5. **Tests** — write-on-completion/correct-row-shape, owner-scoped read,
+   another owner → 404, malformed input never persists.
+6. **This file** — update it **in the same PR**: the table entry, the ERD, the
+   readiness matrix, the migration sequence. A schema change that doesn't
+   touch this file is an incomplete change.
+
+### Where does this data live? (decide storage first)
+
+| Nature of the data | Home | Why |
+| --- | --- | --- |
+| Durable, queryable, owner-facing, or needed for analytics/exports | **Postgres table** | survives restarts, joins, indexes |
+| Live cursor / short-lived session state (a user's position in a flow, rate-limit counters, cache) | **Redis + TTL** | disposable by design; never a table |
+| Static seed data, versioned in code (templates, built-in copy) | **In-code registry / constant** | importable with no infrastructure, reviewable in a PR |
+| Platform configuration with a single value and no UI (GOD id, master key) | **Env / config** | one value, no rows |
+| Per-bot behaviour the engine interprets | **`bot_configs.flow` JSONB** | the north star: no schema change per feature |
+
+Rule of thumb: if losing it on restart is fine, it is Redis; if a human would
+notice it's gone, it is a table.
+
+### Conventions
+
+- snake_case identifiers; plural table names (`bots`, `chat_events`).
+- `BIGINT` surrogate ids (`id`), `timestamptz` for every timestamp, never naive.
+- Money and token counts are **integers** (minor units) — never floats.
+- FKs are explicit and cascade deliberately (`ondelete="CASCADE"` for
+  owned data like a bot's config and responses).
+- Order rows by `created_at DESC` with a matching composite index when a
+  human will page through them.
+- When a field describes *per-bot behaviour*, it belongs in `flow` JSONB; when
+  it must be queried, joined, or aggregated by the platform, it earns a column.
+
+### Do not
+
+- **No per-bot tables, ever** — one table serves every tenant, discriminated by
+  `bot_id`.
+- **Never `UPDATE` truth** — history, ledgers, and audit are append-only;
+  corrections are compensating rows.
+- **Never write Postgres from the webhook hot path** — enqueue; the worker
+  writes.
+- **Never store what a recap message can lose** — if an answer matters, persist
+  it (this is exactly the `collected_responses` gap, issue #21).
+- **Never create a later phase's tables early** — specify them here, migrate
+  when the phase lands.
+
+
+---
+
 ## Migration policy
 
 - Alembic, one migration per sub-phase, [NOW] pattern continues.
