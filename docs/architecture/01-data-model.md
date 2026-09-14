@@ -326,6 +326,42 @@ notice it's gone, it is a table.
 
 ---
 
+## Retention & lifecycle (per data type — never one global window)
+
+Retention is a property of **the data**, declared per table/record class, and
+read by the purge job. A table with no declared policy is a design gap.
+
+- **Built-in / public templates: no expiry.** They are versioned and must stay
+  reproducible; nothing purges them.
+- **Owner-private data whose owner is gone and which no one can reach: purge
+  after a grace window.** Rows carry `deleted_at` + `purge_after`; the worker
+  deletes once past the window. (A private template whose owner deleted their
+  account and which nobody installed is unreachable, un-usable, and should not
+  live forever.)
+- **Collected/behavioural data (`collected_responses`, `chat_events`):
+  configurable window per bot** (H2), default retained, owner can shorten.
+- **Config history: capped per bot** (last N=50), pruned by the worker.
+- Deletion is two-phase everywhere: soft-delete (invisible) → purge (gone) —
+  never a hard `DELETE` at the moment of user intent.
+
+## Drafts & versions (S3.2 and the version handling that follows)
+
+- **Drafts must exist.** A professional designer may spend weeks preparing the
+  next version while end users keep running the current one; end users must
+  never see a change until publish. No auto-publish, no live edits.
+- **Materialise the draft once.** The draft row is created when the feature is
+  enabled / at the migration step — a copy of the published config — and is then
+  edited **in place** for the whole drafting period. It is *not* regenerated on
+  each draft change (that would mean a migration-like write per keystroke and a
+  moving baseline to diff against).
+- **Publish** = atomic status flip + history append (C2). **Rollback** = append
+  a new row copying an older version, never an `UPDATE`.
+- **Constraint:** `bot_configs.bot_id` is unique today, so drafts cannot
+  coexist with the published row until it becomes a **partial** unique index
+  (`unique(bot_id) WHERE status='published'`). Migration `0008`.
+- Later version handling builds on the same shape: a version is a row, a draft
+  is the editable head, publishing promotes it.
+
 ## Migration policy
 
 - Alembic, one migration per sub-phase, [NOW] pattern continues.
