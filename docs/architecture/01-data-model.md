@@ -24,24 +24,40 @@ Statuses: **[NOW]** exists today · **[P x]** lands in phase x.
 5. **Hot path tables are small; big tables are append-only and
    partitioned.** The webhook path touches only `bots`, `bot_configs`,
    Redis. Everything else is behind the worker. [NOW, extended T2]
+6. **Schema-first rule.** No checklist item in `SUB-PHASES.md` may be
+   ticked until its storage is named **in this file**. A roadmap or blueprint
+   item with no table (or an explicit "no table needed, here's where the data
+   lives instead") is a design gap, not an implementation detail — this is how
+   S2.2's `collected_responses` came to be claimed in the checklist while no
+   table, model, or migration ever existed (issue #21). When an item genuinely
+   needs no table, this file still says so and says what owns the data (Redis
+   structure, in-code registry, config).
+7. **Design ahead, migrate on demand.** Tables for later phases are specified
+   here before their phase starts (names, columns, keys, indexes, retention),
+   but migrations land one per sub-phase as that phase ships — no speculative
+   migrations, no retrofitted schema.
 
 ## ERD (target)
 
 ```
 users ──1:N── bots ──1:1── bot_configs ──N:1── bot_config_history
   │             │ 1:N                                       (per publish)
-  │             ├── template_versions (nullable FK, pin B7)
+  │             ├── collected_responses (S2.x flows — feedback/forms/quiz)
+  │             ├── chat_variables (A4 message variables)
   │             ├── bot_members (teams E4, roles)
   │             ├── blocked_users (A7)
+  │             ├── faq_entries (B3, optional — small sets stay in flow)
   │             └── jobs (scheduled/broadcast/rollup, A1)
   ├── user_languages [NOW]
   ├── purchases (Stars G1) ──> credit_ledger (D2)
-  └── templates ──1:N── template_versions (B7)
+  ├── referrals (G5)
+  └── templates ──1:N── template_versions (B8 marketplace only — see §Templates)
                       └── template_reviews (F5)
 
 chat_events (partitioned by month, append-only — analytics E5, funnels)
 ai_usage (append-only — D4)          audit_log (append-only — F4)
 secrets (encrypted — S0.3)          webhook_deliveries (retry bookkeeping)
+redis (not PG): flowstate:{bot}:{user} (30 min TTL), config cache, liveness
 ```
 
 ## Table inventory
@@ -59,16 +75,67 @@ secrets (encrypted — S0.3)          webhook_deliveries (retry bookkeeping)
   **Extends [P3/P8]:** + `status: draft|published|archived`,
   + `published_at`, + `template_version_id` FK (B7 pin),
   + `publish_checklist` JSONB (M2e).
+  ⚠️ **Constraint change required for drafts (S3.2):** `bot_id` is unique
+  today, so a bot cannot hold a draft row and a published row at once. When
+  drafts land, replace `unique(bot_id)` with a **partial** unique index —
+  `unique(bot_id) WHERE status = 'published'` — so exactly one published
+  config exists per bot while drafts coexist. Decide this before S3.2, not
+  during it.
 
-### Config history (C2, rollback) [P3]
+### Conversational flows (S2.x: feedback / quiz / simple form) [NOW]
 
-- `bot_config_history` — append-only. Columns: bot_id, version,
-  flow JSONB, published_by (user id), published_at, change_note,
-  is_rollback_of. Publish = `INSERT` here + flip `bot_configs` in one
-  transaction. Rollback = insert a NEW row (copy of old), never UPDATE.
-  Cap retention: keep last N=50 per bot, prune in the worker (H2 reuse).
+- `collected_responses` — **one table serves feedback, forms, and quizzes.**
+  Columns: `bot_id` FK (CASCADE), `chat_id` BIGINT, `user_id` BIGINT,
+  `flow_ref` (template id or flow version), `answers` JSONB (step id →
+  value; labels preserved for display), `score` INT NULL / `graded` INT NULL
+  (quizzes), `completed` BOOL, `created_at`. Index
+  `(bot_id, created_at DESC)` for the owner's list; optional
+  `(bot_id, user_id)`. Written **on completion** by the shared steps path —
+  one write site, zero per-template code.
+  ⚠️ **STATUS — not built (issue #21).** Today answers live only in Redis
+  `flowstate:{bot_id}:{user_id}` (30 min TTL) and are delivered once to the
+  owner's chat by `steps.deliver_to_owner()` (best-effort recap). That message
+  is the only copy: no open owner chat or a failed send = answers dropped.
+  Nothing reads this table yet, but E5 (analytics/drop-off), H1 (GDPR export)
+  and H2 (retention) all index on it, so it is a prerequisite rather than a
+  later add-on. Migration `0006`. Retention: owned by H2's purge job, never
+  hardcoded here.
 
-### Templates (B7, B8) [P2]
+- **Redis `flowstate:{bot_id}:{user_id}`** — deliberately *not* a table: the
+  live cursor of one user through one flow (`index`, `values`, `labels`),
+  30-minute TTL, no durability requirement. Persisted answers are the copy
+  that matters (above); the cursor is disposable by design.
+
+- `chat_variables` (A4) — `bot_id`, `chat_id`, `key`, `value` JSONB,
+  `updated_at`, unique `(bot_id, chat_id, key)`. Backs `{{user.x}}` /
+  `{{var.x}}` interpolation in any outgoing copy. Read into the Redis config
+  path per chat; small rows, owner-scoped export helper for H1.
+
+- `faq_entries` (B3) — `bot_id`, `question`, `answer`, `keywords` TEXT[],
+  `priority`, `is_active`. Only when the FAQ set outgrows the flow JSONB
+  (small sets stay in `flow.faq` — no table needed; this is the escape hatch
+  that keeps configs small).
+
+### Templates (S2.x, B7/B8) — in-code registry [NOW], tables only for a marketplace
+
+**Reality check.** Phase 2 deliberately did **not** create template tables:
+S2.1 chose an in-code registry (`src/tme/templates/` — `TemplateSpec` + five
+versioned seeds) because a template is *seed data for a config*, importable
+with no DB, and "a `templates` table only becomes interesting when a
+marketplace does." So today:
+
+- **Registry (in code, source of truth)** — `TemplateSpec(id, version,
+  display_name, description, bot_type, seed flow)`, `list_templates()` /
+  `get_template()` / `resolve_template()`. Adding a template = one data entry.
+- **Per-bot pin, in data** — the flow rider `template: {id, version}`
+  (`STAMP_KEY = "template"`), exposed by the API as `current` +
+  `latest_version` + `update_available`. No FK, no join, no table; the stamp
+  is validated on read like everything else in `flow`.
+- **Tables below are [P7/B8 marketplace]** — they exist for *user-authored,
+  public* templates with ownership, install counts and reviews. Do not create
+  them until the marketplace phase; when it lands, the registry seeds become
+  the initial rows (migration copies them in, registry stays the authoring
+  format for built-ins).
 
 - `templates` — slug, owner_id (author), category, blurb, icon,
   is_public, install_count, rating_sum, rating_count. Marketplace card
@@ -77,6 +144,16 @@ secrets (encrypted — S0.3)          webhook_deliveries (retry bookkeeping)
   seed config), changelog, is_reviewed (F5), review_state. Bots PIN a
   version; bump propagation is opt-in per bot ("update available").
 - `template_reviews` — version_id, reviewer (GOD), verdict, notes. (F5)
+- `referrals` (G5) — referrer_user_id, invited_user_id, code, state,
+  credited_at; unique(invited_user_id) so a user is only ever credited once.
+
+### Config history (C2, rollback) [P3]
+
+- `bot_config_history` — append-only. Columns: bot_id, version,
+  flow JSONB, published_by (user id), published_at, change_note,
+  is_rollback_of. Publish = `INSERT` here + flip `bot_configs` in one
+  transaction. Rollback = insert a NEW row (copy of old), never UPDATE.
+  Cap retention: keep last N=50 per bot, prune in the worker (H2 reuse).
 
 ### Team access (E4) [P7-early]
 
@@ -150,9 +227,147 @@ secrets (encrypted — S0.3)          webhook_deliveries (retry bookkeeping)
 - `settings` (god_telegram_id etc.) stays in env/config, not a table —
   one GOD, no UI to edit it.
 
+## Schema readiness by phase
+
+Where each roadmap phase's storage stands, so nothing gets retrofitted. "Redis"
+and "in code" are first-class answers — they mean *no table is needed*, stated
+explicitly rather than left implicit.
+
+| Phase | Needs | Status |
+| ----- | ----- | ------ |
+| P0 foundation | `users`, `bots`, `bot_configs`, `secrets`, `dashboard_auth_tokens` | ✅ exist |
+| P1 multilanguage | `user_languages` | ✅ exists |
+| P2 templates + flows | in-code registry (no table), flow rider `template:{id,version}`, Redis `flowstate` (**no table**), `collected_responses` | ⚠️ **`collected_responses` missing** — issue #21, migration `0006` |
+| P3 GOD + builder | `audit_log`, `bot_config_history`, `bot_configs.status` + partial unique index | ⚠️ design fixed here; migrations with S3.x |
+| P4 AI gateway | `secrets` (kind `api_key`), `ai_usage`, `credit_ledger`, `purchases` | design ready |
+| P5 workflow engine | `jobs` (worker spine), `chat_variables`, `faq_entries` | design ready |
+| P6 ops/hardening | `blocked_users`, `incident_reports`, `webhook_deliveries` | design ready |
+| P7 ecosystem | `templates`/`template_versions`/`template_reviews` (marketplace), `referrals`, `bot_members`, `daily_bot_stats`, `chat_events` | design ready — **do not create before the phase** |
+| P8 dashboard vision | reads P3's history; `publish_checklist` column on `bot_configs` | design ready |
+
+## Migration sequence (declared ahead of time)
+
+Numbering is sequential and one migration per sub-phase; a phase that needs
+several tables may still ship one migration per sub-phase, never one per table
+buried inside a feature PR.
+
+- `0001` initial schema ✅ · `0002` bot_type ✅ · `0003` dashboard_auth_tokens ✅
+  · `0004` user_languages ✅ · `0005` secret_vault ✅
+- `0006` **`collected_responses`** (issue #21) ← the only *overdue* migration
+- `0007` `bot_config_history` + `audit_log` (S3.x, with the config lifecycle)
+- `0008` `bot_configs.status` + partial unique index (S3.2 drafts)
+- `0009` `jobs` (worker spine) — first phase that needs a background worker
+- `0010` credits/metering (`credit_ledger`, `purchases`) — Phase 4
+- `0011` `chat_variables` (A4) · `0012` `ai_usage` (D4) · `0013` `chat_events`
+  partitions + `daily_bot_stats` (E5) · `0014` `blocked_users` /
+  `incident_reports` (P6) · `0015` marketplace tables (P7)
+
+The exact numbers may shift as phases land; the **order** is the contract.
+
+## Working with the schema (runbook for agents and contributors)
+
+### Adding a table — the order is not optional
+
+1. **Model** — `src/tme/database/models.py`: SQLAlchemy 2.0 style, `Mapped[...]`
+   annotations, `__tablename__` snake_case, FKs with an explicit `ondelete`.
+2. **Migration** — `migrations/versions/000N_snake_name.py`, next free number.
+   Alembic is applied automatically at container start
+   (`CMD ["sh","-c","alembic upgrade head && exec uvicorn ..."]`) and in CI
+   before tests, so there is no manual step — which also means a broken
+   migration blocks the boot. Test the upgrade path against a fresh DB.
+3. **Write path** — one write site, in the service that owns the data. Never
+   on the webhook hot path (that touches only `bots`, `bot_configs`, Redis).
+4. **Read path** — owner-scoped API route (`/api/bots/{bot_id}/...`) so
+   ownership checks are inherited, never re-implemented per endpoint.
+5. **Tests** — write-on-completion/correct-row-shape, owner-scoped read,
+   another owner → 404, malformed input never persists.
+6. **This file** — update it **in the same PR**: the table entry, the ERD, the
+   readiness matrix, the migration sequence. A schema change that doesn't
+   touch this file is an incomplete change.
+
+### Where does this data live? (decide storage first)
+
+| Nature of the data | Home | Why |
+| --- | --- | --- |
+| Durable, queryable, owner-facing, or needed for analytics/exports | **Postgres table** | survives restarts, joins, indexes |
+| Live cursor / short-lived session state (a user's position in a flow, rate-limit counters, cache) | **Redis + TTL** | disposable by design; never a table |
+| Static seed data, versioned in code (templates, built-in copy) | **In-code registry / constant** | importable with no infrastructure, reviewable in a PR |
+| Platform configuration with a single value and no UI (GOD id, master key) | **Env / config** | one value, no rows |
+| Per-bot behaviour the engine interprets | **`bot_configs.flow` JSONB** | the north star: no schema change per feature |
+
+Rule of thumb: if losing it on restart is fine, it is Redis; if a human would
+notice it's gone, it is a table.
+
+### Conventions
+
+- snake_case identifiers; plural table names (`bots`, `chat_events`).
+- `BIGINT` surrogate ids (`id`), `timestamptz` for every timestamp, never naive.
+- Money and token counts are **integers** (minor units) — never floats.
+- FKs are explicit and cascade deliberately (`ondelete="CASCADE"` for
+  owned data like a bot's config and responses).
+- Order rows by `created_at DESC` with a matching composite index when a
+  human will page through them.
+- When a field describes *per-bot behaviour*, it belongs in `flow` JSONB; when
+  it must be queried, joined, or aggregated by the platform, it earns a column.
+
+### Do not
+
+- **No per-bot tables, ever** — one table serves every tenant, discriminated by
+  `bot_id`.
+- **Never `UPDATE` truth** — history, ledgers, and audit are append-only;
+  corrections are compensating rows.
+- **Never write Postgres from the webhook hot path** — enqueue; the worker
+  writes.
+- **Never store what a recap message can lose** — if an answer matters, persist
+  it (this is exactly the `collected_responses` gap, issue #21).
+- **Never create a later phase's tables early** — specify them here, migrate
+  when the phase lands.
+
+
+---
+
+## Retention & lifecycle (per data type — never one global window)
+
+Retention is a property of **the data**, declared per table/record class, and
+read by the purge job. A table with no declared policy is a design gap.
+
+- **Built-in / public templates: no expiry.** They are versioned and must stay
+  reproducible; nothing purges them.
+- **Owner-private data whose owner is gone and which no one can reach: purge
+  after a grace window.** Rows carry `deleted_at` + `purge_after`; the worker
+  deletes once past the window. (A private template whose owner deleted their
+  account and which nobody installed is unreachable, un-usable, and should not
+  live forever.)
+- **Collected/behavioural data (`collected_responses`, `chat_events`):
+  configurable window per bot** (H2), default retained, owner can shorten.
+- **Config history: capped per bot** (last N=50), pruned by the worker.
+- Deletion is two-phase everywhere: soft-delete (invisible) → purge (gone) —
+  never a hard `DELETE` at the moment of user intent.
+
+## Drafts & versions (S3.2 and the version handling that follows)
+
+- **Drafts must exist.** A professional designer may spend weeks preparing the
+  next version while end users keep running the current one; end users must
+  never see a change until publish. No auto-publish, no live edits.
+- **Materialise the draft once.** The draft row is created when the feature is
+  enabled / at the migration step — a copy of the published config — and is then
+  edited **in place** for the whole drafting period. It is *not* regenerated on
+  each draft change (that would mean a migration-like write per keystroke and a
+  moving baseline to diff against).
+- **Publish** = atomic status flip + history append (C2). **Rollback** = append
+  a new row copying an older version, never an `UPDATE`.
+- **Constraint:** `bot_configs.bot_id` is unique today, so drafts cannot
+  coexist with the published row until it becomes a **partial** unique index
+  (`unique(bot_id) WHERE status='published'`). Migration `0008`.
+- Later version handling builds on the same shape: a version is a row, a draft
+  is the editable head, publishing promotes it.
+
 ## Migration policy
 
 - Alembic, one migration per sub-phase, [NOW] pattern continues.
+- **A migration that adds a table must update this file in the same PR** —
+  schema reality and this document never diverge (the S2.2 miss came from
+  exactly that divergence).
 - Never `DROP` data columns in the same release that stops writing
   them; deprecate → prune next release (e.g. `dashboard_auth_tokens`,
   already retired logically [NOW]).
