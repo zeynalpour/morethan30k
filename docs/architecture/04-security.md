@@ -41,15 +41,56 @@ Statuses: **[NOW]** shipped today · **[P x]** lands in phase x ·
   re-wrap the same DEK under the new key, write it back (the `ciphertext`
   never changes), then verify by decrypting one known row with the new key.
   Back the new key up offline **before** retiring the old one: a lost
-  `VAULT_MASTER_KEY` makes every vaulted token unrecoverable. The pepper is
-  separate — rotating `VAULT_PEPPER` invalidates all `token_hash` values
-  (derived data), so re-run the backfill (without `--clear-plaintext`) to
-  recompute them.
+  `VAULT_MASTER_KEY` makes every vaulted token unrecoverable.
+- **Pepper rotation is a separate, cheaper knob — but it must be paired with
+  a repair in the same window.** `VAULT_PEPPER` feeds `token_hash`, so
+  rotating it invalidates every stored hash and no bot resolves by hash until
+  they are re-derived; the plaintext fallback does not cover a stack whose
+  column is already cleared. So: rotate the pepper, then immediately run
+  `scripts/vault_backfill.py --apply` (no `--clear-plaintext`) — it
+  re-derives `token_hash` from the **vaulted** token for rows with no
+  plaintext, and from the column otherwise. The hash is derived data, so a
+  repair can never lose a token.
 - **Never in logs:** secret_token header, bot tokens, AI keys are
   filtered by the logging config (pattern redaction, plus the PII
   redaction middleware below). `…last6` display convention stays [NOW].
 - **Frontend:** zero secrets in the SPA — initData HMAC only [NOW];
   dashboard never sees a token (S0.4 acceptance criterion, kept).
+
+### Running the backfill, per stack
+
+```bash
+# 1. generate ONE key per stack, store it offline (outside the host, outside
+#    the deploy user), then put it + the pepper in that stack's .env
+openssl rand -base64 32        # VAULT_MASTER_KEY
+openssl rand -base64 32        # VAULT_PEPPER
+
+# 2. restart so the app picks up the keys (migration 0006 applies on start:
+#    `alembic upgrade head` runs in the container's CMD)
+APP_PORT=8081 docker compose -p tme-test --env-file .env -f docker-compose.prod.yml up -d --build
+
+# 3. look before you leap — this writes nothing
+docker compose -p tme-test --env-file .env -f docker-compose.prod.yml \
+  exec app python scripts/vault_backfill.py
+
+# 4. hash + vault (the plaintext column is still there; still reversible)
+docker compose -p tme-test --env-file .env -f docker-compose.prod.yml \
+  exec app python scripts/vault_backfill.py --apply
+
+# 5. only after the summary reads `failed 0` AND step 1 is really backed up:
+docker compose -p tme-test --env-file .env -f docker-compose.prod.yml \
+  exec app python scripts/vault_backfill.py --apply --clear-plaintext
+```
+
+Swap `-p tme-test`/`APP_PORT=8081` for the stack you are migrating
+(`tme-dev`/8082, `tme-prod`/8080). An image built before this change has no
+`scripts/` in it; for those, run the same commands through a one-off container
+with the script bind-mounted:
+
+```bash
+docker compose -p tme-test --env-file .env -f docker-compose.prod.yml \
+  run --rm -v "$PWD/scripts:/app/scripts:ro" app python scripts/vault_backfill.py
+```
 
 ## AuthN/AuthZ matrix
 

@@ -266,7 +266,10 @@ marketplace does." So today:
   vaulted token unrecoverable — back it up per stack before switching over.
   Rotating `VAULT_PEPPER` is separate and cheaper: it invalidates every
   `token_hash` (derived data, safe to recompute), so re-run
-  `scripts/vault_backfill.py --apply` afterwards to rewrite the hashes.
+  `scripts/vault_backfill.py --apply` in the same window — for a row whose
+  plaintext is already cleared the script re-derives the hash from the
+  **vaulted** token. Until that repair runs, no bot resolves by hash, and a
+  cleared stack has no plaintext fallback.
 
 ### GOD & audit (F1, F4) [P3]
 
