@@ -4,7 +4,9 @@ Templates seed a ``steps`` array into the flow; because ``BotConfigBase`` is
 ``extra="allow"``, that rider needs no migration and no per-template code. This
 module interprets it:
 
-* renders each step (prompt + optional option buttons),
+* renders each step (prompt + optional option buttons) **in the user's own
+  language** — per-step translations ride the Phase 1 fallback chain via
+  :func:`localized_steps`, so no template carries localization code,
 * routes option taps (``stepopt:{step}:{option}``) and free-text answers,
 * keeps exactly one active flow per ``(bot, user)`` in Redis (30 min TTL),
 * scores quiz-style steps (``correct_answers``), and
@@ -23,6 +25,7 @@ import orjson
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
+from tme.core.i18n import LocalizedCopy, localize
 from tme.core.logging import get_logger
 from tme.core.redis_client import redis_client
 from tme.database.engine import session_scope
@@ -133,6 +136,39 @@ def is_step_bot(config: BotConfigUnion) -> bool:
     return bool(parse_steps(config))
 
 
+def render_step(step: FlowStep, copy: LocalizedCopy) -> FlowStep:
+    """``step`` with its prompt and option labels resolved through ``copy``.
+
+    Only user-visible text changes: the step id, its ``answer_type``, its
+    ``correct_answers`` and every option ``value`` are language-independent, so
+    routing (``stepopt:{step}:{option}``), scoring and state keys are identical
+    in every language.
+    """
+    if not copy.steps:
+        return step
+
+    labels = copy.step_options(step.id, [option.label for option in step.options])
+    return step.model_copy(
+        update={
+            "prompt": copy.step_prompt(step.id, step.prompt),
+            "options": [
+                option.model_copy(update={"label": label})
+                for option, label in zip(step.options, labels, strict=True)
+            ],
+        }
+    )
+
+
+def localized_steps(config: BotConfigUnion, language_code: str | None) -> list[FlowStep]:
+    """The flow's steps with every prompt/option label localized for a user.
+
+    The single entry point for rendering: one shared path, no per-template
+    code, and (with no per-step translations) the unmodified base steps.
+    """
+    copy = localize(config, language_code)
+    return [render_step(step, copy) for step in parse_steps(config)]
+
+
 # --------------------------------------------------------------------------- #
 # State (Redis)
 # --------------------------------------------------------------------------- #
@@ -234,9 +270,16 @@ async def _send_step(bot: Bot, chat_id: int, step_index: int, step: FlowStep) ->
     )
 
 
-async def start_flow(bot: Bot, config: BotConfigUnion, chat_id: int, user_id: int) -> bool:
+async def start_flow(
+    bot: Bot,
+    config: BotConfigUnion,
+    chat_id: int,
+    user_id: int,
+    *,
+    language_code: str | None = None,
+) -> bool:
     """Begin the flow (optionally the step index embedded in the callback)."""
-    steps = parse_steps(config)
+    steps = localized_steps(config, language_code)
     if not steps:
         return False
 
@@ -252,10 +295,16 @@ async def start_flow(bot: Bot, config: BotConfigUnion, chat_id: int, user_id: in
 
 
 async def start_flow_at(
-    bot: Bot, config: BotConfigUnion, chat_id: int, user_id: int, index: int
+    bot: Bot,
+    config: BotConfigUnion,
+    chat_id: int,
+    user_id: int,
+    index: int,
+    *,
+    language_code: str | None = None,
 ) -> bool:
     """Start the flow at ``index`` (menu buttons carry ``step:{index}``)."""
-    steps = parse_steps(config)
+    steps = localized_steps(config, language_code)
     if not steps:
         return False
 
@@ -308,10 +357,16 @@ async def _advance(
 
 
 async def handle_option_tap(
-    bot: Bot, config: BotConfigUnion, chat_id: int, user_id: int, data: str
+    bot: Bot,
+    config: BotConfigUnion,
+    chat_id: int,
+    user_id: int,
+    data: str,
+    *,
+    language_code: str | None = None,
 ) -> bool:
     """Process ``stepopt:{step}:{option}``. False → nothing was handled."""
-    steps = parse_steps(config)
+    steps = localized_steps(config, language_code)
     if not steps:
         return False
 
@@ -348,10 +403,16 @@ async def handle_option_tap(
 
 
 async def handle_text_answer(
-    bot: Bot, config: BotConfigUnion, chat_id: int, user_id: int, text: str
+    bot: Bot,
+    config: BotConfigUnion,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    *,
+    language_code: str | None = None,
 ) -> bool:
     """Capture a free-text answer for the active flow. False → not applicable."""
-    steps = parse_steps(config)
+    steps = localized_steps(config, language_code)
     if not steps:
         return False
 

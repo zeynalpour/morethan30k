@@ -167,7 +167,9 @@ async def on_cancel(message: Message) -> None:
 # Multi-step flows (the `steps` primitive — Feedback / Quiz / Simple form)
 # --------------------------------------------------------------------------- #
 @dynamic_router.callback_query(F.data.startswith(START_PREFIX))
-async def on_step_start(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
+async def on_step_start(
+    callback: CallbackQuery, bot_config: BotConfigUnion, language_code: str | None
+) -> None:
     """A menu button carrying ``step:{index}`` starts (or restarts) the flow."""
     message = callback.message
     if callback.from_user is None or not isinstance(message, Message) or message.bot is None:
@@ -180,12 +182,15 @@ async def on_step_start(callback: CallbackQuery, bot_config: BotConfigUnion) -> 
         message.chat.id,
         callback.from_user.id,
         parse_start_index(callback.data or ""),
+        language_code=language_code,
     )
     await callback.answer() if started else await callback.answer("Not available")
 
 
 @dynamic_router.callback_query(F.data.startswith(OPTION_PREFIX))
-async def on_step_option(callback: CallbackQuery, bot_config: BotConfigUnion) -> None:
+async def on_step_option(
+    callback: CallbackQuery, bot_config: BotConfigUnion, language_code: str | None
+) -> None:
     """An option button: record the answer and move to the next step."""
     message = callback.message
     if callback.from_user is None or not isinstance(message, Message) or message.bot is None:
@@ -198,6 +203,7 @@ async def on_step_option(callback: CallbackQuery, bot_config: BotConfigUnion) ->
         message.chat.id,
         callback.from_user.id,
         callback.data or "",
+        language_code=language_code,
     )
     await callback.answer()  # always clear Telegram's spinner
     if not handled:
@@ -271,7 +277,12 @@ async def on_fallback(
         and message.from_user is not None
         and message.bot is not None
         and await handle_text_answer(
-            message.bot, bot_config, message.chat.id, message.from_user.id, text
+            message.bot,
+            bot_config,
+            message.chat.id,
+            message.from_user.id,
+            text,
+            language_code=language_code,
         )
     ):
         return

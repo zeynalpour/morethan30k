@@ -191,3 +191,144 @@ def test_blank_hello_greeting_falls_back_to_the_default() -> None:
     copy = localize(cfg, "en")
     assert copy.greeting.strip()
     assert copy.welcome_message.strip()
+
+
+# --------------------------------------------------------------------------- #
+# Issue #23 — main_language drives the MIDDLE layer, per-step copy rides the chain
+# --------------------------------------------------------------------------- #
+def _chain_config(**overrides) -> BotConfigUnion:
+    """A Persian-base bot with en / fa / de translations (issue #23)."""
+    base = {
+        "bot_type": "generic",
+        "welcome_message": "خوش آمدید (base)",
+        "fallback_message": "پاسخ پیش‌فرض (base)",
+        "active_modules": ["steps"],
+        "steps": [
+            {
+                "id": "rating",
+                "prompt": "قیمت بده (base)",
+                "options": [
+                    {"label": "خوب (base)", "value": "good"},
+                    {"label": "بد (base)", "value": "bad"},
+                ],
+            }
+        ],
+        "translations": {
+            "en": {
+                "welcome_message": "Welcome (en)",
+                "steps": {"rating": {"prompt": "Rate us (en)", "options": ["Good (en)"]}},
+            },
+            "fa": {
+                "welcome_message": "خوش آمدید (fa)",
+                # Blank label index 0 = "unset" → that option falls through.
+                "steps": {"rating": {"prompt": "امتیاز بده (fa)", "options": ["", "بد (fa)"]}},
+            },
+            "de": {
+                "welcome_message": "Willkommen (de)",
+                "steps": {"rating": {"prompt": "Bewerten (de)"}},
+            },
+        },
+        **overrides,
+    }
+    return TypeAdapter(BotConfigUnion).validate_python(base)
+
+
+def test_without_main_language_english_stays_the_middle_layer() -> None:
+    """Unset main_language = today's behaviour, byte for byte."""
+    cfg = _chain_config()
+    assert cfg.main_language is None
+    # A language the bot does not translate falls to the English layer.
+    assert localize(cfg, "tr").welcome_message == "Welcome (en)"
+    assert localize(cfg, None).welcome_message == "Welcome (en)"
+    # The fa translation is NOT a fallback for other languages.
+    assert localize(cfg, "tr").fallback_message == "پاسخ پیش‌فرض (base)"
+
+
+def test_main_language_replaces_the_middle_layer() -> None:
+    cfg = _chain_config(main_language="fa")
+    # No translation for the user's language → the MAIN language applies.
+    assert localize(cfg, "tr").welcome_message == "خوش آمدید (fa)"
+    # No language at all → the middle layer, then the base copy.
+    assert localize(cfg, None).welcome_message == "خوش آمدید (fa)"
+    # The middle layer is not English any more.
+    assert "Welcome (en)" not in localize(cfg, "tr").welcome_message
+
+
+def test_user_language_still_wins_over_the_main_language() -> None:
+    """Only the MIDDLE layer moves — the order of the chain is unchanged."""
+    cfg = _chain_config(main_language="fa")
+    assert localize(cfg, "de").welcome_message == "Willkommen (de)"
+    assert localize(cfg, "en").welcome_message == "Welcome (en)"
+    # A user whose language IS the main language resolves to it directly.
+    assert localize(cfg, "fa").welcome_message == "خوش آمدید (fa)"
+    # Region-tagged user codes collapse first (unchanged behaviour).
+    assert localize(cfg, "fa-IR").welcome_message == "خوش آمدید (fa)"
+
+
+def test_blank_main_language_is_unset_and_keeps_english_middle_layer() -> None:
+    cfg = _chain_config(main_language="   ")
+    assert cfg.main_language is None
+    assert localize(cfg, "tr").welcome_message == "Welcome (en)"
+
+
+def test_single_language_still_bypasses_main_language_and_step_copy() -> None:
+    """single_language behaviour is untouched: base copy only, every layer.
+
+    The copy carries NO step overrides, so the engine (which supplies the
+    flow's own prompt/label as the fallback) renders the base step copy.
+    """
+    cfg = _chain_config(main_language="fa", single_language=True)
+    copy = localize(cfg, "fa")
+    assert copy.welcome_message == "خوش آمدید (base)"
+    assert copy.steps == {}
+    assert copy.step_prompt("rating", "قیمت بده (base)") == "قیمت بده (base)"
+    assert copy.step_options("rating", ["L1", "L2"]) == ["L1", "L2"]
+
+
+def test_step_copy_follows_the_same_fallback_chain() -> None:
+    # de supplies a prompt but no option labels → the en middle layer's label
+    # applies to index 0 and the base label to the index en does not cover.
+    copy = localize(_chain_config(), "de")
+    assert copy.step_prompt("rating", "base prompt") == "Bewerten (de)"
+    assert copy.step_options("rating", ["Good (base)", "Bad (base)"]) == [
+        "Good (en)",
+        "Bad (base)",
+    ]
+
+    # main_language="fa" → a tr user gets the fa prompt, and the blank fa
+    # label falls through while the provided one wins.
+    copy = localize(_chain_config(main_language="fa"), "tr")
+    assert copy.step_prompt("rating", "قیمت بده (base)") == "امتیاز بده (fa)"
+    assert copy.step_options("rating", ["خوب (base)", "بد (base)"]) == [
+        "خوب (base)",
+        "بد (fa)",
+    ]
+
+
+def test_step_copy_unknown_step_id_and_missing_entry_fall_through() -> None:
+    for language in ("fa", "tr", None):
+        copy = localize(_chain_config(main_language="fa"), language)
+        assert copy.step_prompt("ghost", "base prompt") == "base prompt"
+        assert copy.step_options("ghost", ["A", "B"]) == ["A", "B"]
+
+
+def test_blank_step_overrides_are_unset() -> None:
+    """A cleared step field (or a blank option label) never blanks a prompt."""
+    cfg = TypeAdapter(BotConfigUnion).validate_python(
+        {
+            "bot_type": "generic",
+            "active_modules": ["steps"],
+            "steps": [{"id": "a", "prompt": "base prompt"}],
+            "translations": {"fa": {"steps": {"a": {"prompt": "   ", "options": ["", "عالی"]}}}},
+        }
+    )
+    copy = localize(cfg, "fa")
+    assert copy.step_prompt("a", "base prompt") == "base prompt"
+    assert copy.step_options("a", ["L1", "L2"]) == ["L1", "عالی"]
+
+
+def test_step_copy_is_absent_when_nothing_is_translated() -> None:
+    """No per-step overrides → an empty map, so renderers can skip the work."""
+    copy = localize(_config(), "fa")
+    assert copy.steps == {}
+    assert copy.step_prompt("anything", "base") == "base"

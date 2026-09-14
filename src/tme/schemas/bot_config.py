@@ -13,11 +13,23 @@ compatible; Hello/Echo are thin, purpose-built variants plugged into the
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from tme.database.models import BotType
+
+#: ISO-639-1 codes are exactly two lowercase letters — the same shape
+#: :func:`tme.core.i18n.normalize_language` produces for translation keys.
+_LANG_CODE_RE = re.compile(r"^[a-z]{2}$")
 
 
 class MenuButton(BaseModel):
@@ -39,12 +51,36 @@ class MenuButton(BaseModel):
     )
 
 
+class StepTranslation(BaseModel):
+    """Localized copy for **one** step of a multi-step flow (issue #23).
+
+    Keyed by the step's ``id`` inside :attr:`Translation.steps`. Only the
+    overridable text lives here: the step ``id``, its ``answer_type``, its
+    ``correct_answers`` and each option's ``value`` are language-independent
+    and stay in the flow, so a translation can never re-route or re-score a
+    flow. ``extra="allow"`` keeps future translatable step fields
+    migration-free, exactly like :class:`Translation`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    prompt: str | None = Field(default=None, description="Localized step prompt.")
+    options: list[str] | None = Field(
+        default=None,
+        description=(
+            "Localized option LABELS, positionally aligned with the step's "
+            "``options`` (the option ``value`` is never translated)."
+        ),
+    )
+
+
 class Translation(BaseModel):
     """Per-language overrides for a bot's user-facing copy (Phase 1 i18n).
 
     Every field is optional; :func:`tme.core.i18n.localize` overlays the
-    present fields over the base flow (fallback chain: user language → English
-    → base). ``extra=allow`` keeps future translatable fields migration-free.
+    present fields over the base flow (fallback chain: user language → main
+    language (English by default) → base). ``extra=allow`` keeps future
+    translatable fields migration-free.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -57,6 +93,14 @@ class Translation(BaseModel):
     echo_prefix: str | None = Field(default=None, description="Echo-bot localized prefix.")
     menu_buttons: list[MenuButton] | None = Field(
         default=None, description="Localized menu buttons (callback_data is shared)."
+    )
+    steps: dict[str, StepTranslation] | None = Field(
+        default=None,
+        description=(
+            "Per-step copy overrides, keyed by the step id in the flow's "
+            "``steps`` array. An id the flow doesn't have is stored as given "
+            "(the schema never invents step ids) and is simply never read."
+        ),
     )
 
 
@@ -88,6 +132,16 @@ class BotConfigBase(BaseModel):
             "(from the user's Telegram language_code)."
         ),
     )
+    main_language: str | None = Field(
+        default=None,
+        max_length=5,
+        description=(
+            "The language the bot's BASE copy is written in (ISO-639-1). "
+            "Sets the middle layer of the fallback chain: user language → "
+            "this language → base copy. ``None`` keeps the historical "
+            "English middle layer."
+        ),
+    )
     welcome_message: str = Field(
         default="👋 Welcome!",
         description="Text sent in response to /start (and as the flow root).",
@@ -104,6 +158,26 @@ class BotConfigBase(BaseModel):
         default="🤖 Sorry, I didn't understand that.",
         description="Reply used when no rule matches the incoming update.",
     )
+
+    @field_validator("main_language", mode="after")
+    @classmethod
+    def _normalize_main_language(cls, value: str | None) -> str | None:
+        """Validate the ISO-639-1 code at write time; blank means "unset".
+
+        A region-tagged code (``fa-IR``) collapses to its two-letter base,
+        mirroring :func:`tme.core.i18n.normalize_language`. An empty/blank
+        value is stored as ``None`` — the dashboard omits a cleared selector
+        rather than persisting ``""``, and ``None`` is the documented
+        "no main language" state (English middle layer).
+        """
+        if value is None:
+            return None
+        normalized = value.strip().replace("_", "-").split("-", 1)[0].strip().lower()
+        if not normalized:
+            return None
+        if not _LANG_CODE_RE.match(normalized):
+            raise ValueError("main_language must be an ISO-639-1 code (two letters, e.g. 'fa')")
+        return normalized
 
 
 class BotConfigSchema(BotConfigBase):
