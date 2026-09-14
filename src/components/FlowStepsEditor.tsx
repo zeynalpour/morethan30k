@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import type { FlowStepData, StepOptionData, StepTranslation } from "../lib/api";
 
 // Issue #23 — the flow editor renders EVERY step of a multi-step `steps` flow
@@ -27,12 +27,59 @@ function isTerminal(step: FlowStepData): boolean {
   return answerTypeOf(step) === "none";
 }
 
+// New steps need a stable, language-independent id (per-step translations
+// are keyed by it). Numeric suffix, first free one.
+function nextStepId(steps: FlowStepData[]): string {
+  const used = new Set(steps.map((s) => s.id));
+  let n = steps.length + 1;
+  let id = `step${n}`;
+  while (used.has(id)) {
+    n += 1;
+    id = `step${n}`;
+  }
+  return id;
+}
+
 interface FlowStepsEditorProps {
   steps: FlowStepData[];
   onChange: (steps: FlowStepData[]) => void;
 }
 
 export function FlowStepsEditor({ steps, onChange }: FlowStepsEditorProps) {
+  // Two-tap removal: the first ✕ arms it, the second confirms. A confirm
+  // dialog is avoided because Telegram WebApps can't rely on window.confirm.
+  const [confirmingRemove, setConfirmingRemove] = useState<number | null>(null);
+
+  const addStep = useCallback(() => {
+    setConfirmingRemove(null);
+    onChange([...steps, { id: nextStepId(steps), prompt: "" }]);
+  }, [steps, onChange]);
+
+  const removeStep = useCallback(
+    (index: number) => {
+      if (confirmingRemove !== index) {
+        setConfirmingRemove(index);
+        return;
+      }
+      setConfirmingRemove(null);
+      onChange(steps.filter((_, i) => i !== index));
+    },
+    [steps, onChange, confirmingRemove]
+  );
+
+  const moveStep = useCallback(
+    (index: number, delta: number) => {
+      const target = index + delta;
+      if (target < 0 || target >= steps.length) return;
+      setConfirmingRemove(null);
+      const updated = [...steps];
+      const [moved] = updated.splice(index, 1);
+      updated.splice(target, 0, moved);
+      onChange(updated);
+    },
+    [steps, onChange]
+  );
+
   const updateStep = useCallback(
     (index: number, patch: Partial<FlowStepData>) => {
       const updated = [...steps];
@@ -78,15 +125,52 @@ export function FlowStepsEditor({ steps, onChange }: FlowStepsEditorProps) {
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-medium" style={{ color: "var(--tg-text)" }}>
               Step {i + 1} · <b>{step.id}</b>
+              {!step.prompt?.trim() && (
+                <span className="text-xs" style={{ color: "#e53935" }}>
+                  {" "}
+                  · prompt required before saving
+                </span>
+              )}
             </span>
-            {isTerminal(step) && (
-              <span
-                className="text-xs px-2 py-0.5 rounded-full flex-shrink-0"
-                style={{ background: "var(--tg-bg)", color: "var(--tg-hint)" }}
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {isTerminal(step) && (
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full flex-shrink-0"
+                  style={{ background: "var(--tg-bg)", color: "var(--tg-hint)" }}
+                >
+                  🏁 Result step
+                </span>
+              )}
+              <button
+                onClick={() => moveStep(i, -1)}
+                disabled={i === 0}
+                aria-label={`Move ${step.id} up`}
+                className="text-xs px-1.5 py-1 rounded-lg"
+                style={{ color: "var(--tg-hint)", opacity: i === 0 ? 0.4 : 1 }}
               >
-                🏁 Result step
-              </span>
-            )}
+                ↑
+              </button>
+              <button
+                onClick={() => moveStep(i, 1)}
+                disabled={i === steps.length - 1}
+                aria-label={`Move ${step.id} down`}
+                className="text-xs px-1.5 py-1 rounded-lg"
+                style={{ color: "var(--tg-hint)", opacity: i === steps.length - 1 ? 0.4 : 1 }}
+              >
+                ↓
+              </button>
+              <button
+                onClick={() => removeStep(i)}
+                aria-label={`Remove ${step.id}`}
+                className="text-xs px-1.5 py-1 rounded-lg"
+                style={{
+                  background: confirmingRemove === i ? "#e53935" : "transparent",
+                  color: confirmingRemove === i ? "#fff" : "#e53935",
+                }}
+              >
+                {confirmingRemove === i ? "Confirm ✕" : "✕"}
+              </button>
+            </div>
           </div>
 
           <label className="block">
@@ -182,6 +266,14 @@ export function FlowStepsEditor({ steps, onChange }: FlowStepsEditorProps) {
           )}
         </div>
       ))}
+
+      <button
+        onClick={addStep}
+        className="btn-secondary w-full"
+        style={{ border: "1px dashed var(--tg-hint)" }}
+      >
+        ➕ Add step
+      </button>
     </div>
   );
 }
