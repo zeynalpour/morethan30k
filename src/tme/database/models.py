@@ -109,24 +109,25 @@ class UserLanguage(Base):
 class Bot(Base):
     """A single tenant (cloned) bot served by the universal webhook.
 
-    ``token`` is the routing key: it appears in ``POST /webhook/{bot_token}`` and
-    is used to look the tenant up in the Redis cache / DB.
-
-    .. warning::
-       For the MVP the bot token is stored in plaintext. In production it should
-       be encrypted at rest (e.g. app-level envelope encryption or ``pgcrypto``).
+    ``token`` is the *transitional* routing column: it appears in
+    ``POST /webhook/{bot_token}``, but resolution goes through the peppered
+    ``token_hash`` (:mod:`tme.services.bot_lookup`) with this column as the
+    fallback for rows the S0.3 backfill has not touched yet.
     """
 
     __tablename__ = "bots"
 
-    #: The tenant bot's Bot API token — unique routing identifier.
-    #: TRANSITIONAL (S0.3): superseded by ``token_hash`` + the secret vault;
-    #: kept populated until the data migration moves every token into the
-    #: vault, then dropped in a follow-up migration.
-    token: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
-    #: Peppered HMAC-SHA256 of the token — the lookup key on the webhook
-    #: hot path once S0.3 is fully rolled out. Computing it needs no
-    #: decryption and leaks nothing about the token.
+    #: The tenant bot's Bot API token — the raw routing identifier.
+    #: TRANSITIONAL (S0.3): superseded by ``token_hash`` + the secret vault.
+    #: **Nullable since migration 0006** so the backfill job
+    #: (``scripts/vault_backfill.py``) can clear it per stack once a
+    #: decrypt round-trip has been verified; the column is dropped in a
+    #: later release, after dev/test/prod are all backfilled.
+    token: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
+    #: Peppered HMAC-SHA256 of the token — the routing key on the webhook
+    #: hot path (S0.3 activation, issue #28). Computing it needs no
+    #: decryption and leaks nothing about the token. Set by provisioning and
+    #: by the backfill job; the plaintext fallback covers rows without it.
     token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     #: The bot's own Telegram user id (the numeric prefix of the token).
     telegram_bot_id: Mapped[int] = mapped_column(

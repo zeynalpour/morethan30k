@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from tme.config import settings
 from tme.core.bot_registry import get_tenant_bot
-from tme.core.cache import invalidate_bot_config, set_bot_config
+from tme.core.cache import invalidate_bot_config, invalidate_bot_config_hash, set_bot_config
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotConfig, BotType, User
@@ -32,7 +32,8 @@ from tme.schemas.bot_config import (
     HelloBotConfig,
     parse_bot_config,
 )
-from tme.services.vault import _master_key, store_bot_token, token_hash
+from tme.services.bot_lookup import find_bot_by_token
+from tme.services.vault import store_bot_token, token_hash, vault_available
 from tme.templates import TemplateSpec, clone_flow
 
 logger = get_logger(__name__)
@@ -74,15 +75,6 @@ async def _upsert_owner(
         session.add(user)
         await session.flush()  # assign user.id for the FK below
     return user
-
-
-def _vault_status() -> bool:
-    """True if the vault is configured (master key present)."""
-    try:
-        _master_key()
-    except ValueError:
-        return False
-    return True
 
 
 async def provision_managed_bot(
@@ -135,9 +127,11 @@ async def provision_managed_bot(
             first_name=owner_first_name,
         )
 
-        existing = await session.execute(select(BotModel).where(BotModel.token == token))
-        bot_row = existing.scalar_one_or_none()
-        vault_on = _vault_status()
+        # Hash-first lookup (S0.3): a re-provisioned bot is found by its
+        # token_hash, with the plaintext column as the transitional fallback
+        # for rows the backfill has not touched yet.
+        bot_row = await find_bot_by_token(session, token)
+        vault_on = vault_available()
         if not vault_on:
             logger.warning(
                 "VAULT_MASTER_KEY not set — provisioning without vaulting the "
@@ -249,8 +243,13 @@ async def reclone_bot(
 
     # Invalidate AFTER the commit: the next request re-reads the row from
     # Postgres and re-validates it (same path as disable/enable, type switch
-    # and config edits — never a direct `set_bot_config`).
-    await invalidate_bot_config(bot_row.token)
+    # and config edits — never a direct `set_bot_config`). The raw token is
+    # the normal input; a row whose plaintext is already cleared still has
+    # its stored hash, so the drop never silently no-ops.
+    if bot_row.token is not None:
+        await invalidate_bot_config(bot_row.token)
+    elif bot_row.token_hash:
+        await invalidate_bot_config_hash(bot_row.token_hash)
 
     logger.info(
         "Re-cloned bot id=%s to template %s v%s (preserve=%s)",
@@ -298,10 +297,10 @@ async def register_webhook(token: str) -> bool:
                 if info.url == target_url:
                     logger.info("Registered webhook for …%s: %s", token[-6:], target_url)
                     async with session_scope() as session:
-                        result = await session.execute(
-                            select(BotModel).where(BotModel.token == token)
-                        )
-                        if (row := result.scalar_one_or_none()) is not None:
+                        # Hash-first (S0.3) with the transitional plaintext
+                        # fallback — same rule as every other token lookup.
+                        row = await find_bot_by_token(session, token)
+                        if row is not None:
                             row.webhook_registered = True
                     return True
                 logger.warning(

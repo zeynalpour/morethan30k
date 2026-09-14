@@ -16,14 +16,17 @@ are monkeypatched to the test resources for the module's lifetime.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable, Iterator
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import time
 from typing import TypeVar
 from unittest.mock import AsyncMock
@@ -31,8 +34,10 @@ from urllib.parse import urlencode
 
 import asyncpg
 import httpx
+from pydantic import SecretStr
 import pytest
 import redis.asyncio as aioredis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from tme import main
@@ -40,10 +45,17 @@ from tme.config import settings
 from tme.core import cache as cache_module
 from tme.core.i18n import localize
 from tme.database import engine as engine_module
-from tme.database.models import Bot as BotModel, BotType
+from tme.database.models import Bot as BotModel, BotConfig, BotType, User
 from tme.services import user_language as user_language_module
 from tme.services.managed_bots import provision_managed_bot
 from tme.services.user_language import get_user_language, set_user_language
+from tme.services.vault import (
+    delete_bot_token,
+    load_bot_token,
+    resolve_bot_token,
+    store_bot_token,
+    token_hash,
+)
 from tme.templates import get_template
 
 REPO = Path(__file__).resolve().parents[1]
@@ -383,3 +395,341 @@ def test_reclone_end_to_end_through_cache(test_stack, monkeypatch) -> None:
         )
     )
     assert stranger.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# S0.3 activation (issue #28) — hash routing, the token accessor, the backfill
+#
+# ORDER MATTERS, and it is the rollout order:
+#   hash routing → fallback → invalidation → negative cache → token accessor
+#   → backfill dry run → backfill --apply (idempotent) → abort-on-mismatch
+#   → --clear-plaintext (LAST: it clears every row in tme_test, and the tests
+#      after it prove resolution still works with no plaintext anywhere).
+# --------------------------------------------------------------------------- #
+
+#: One deterministic master key for the whole module: vault rows written by an
+#: earlier test must still decrypt in a later one (a random per-test key would
+#: make every earlier row undecryptable).
+_MASTER_KEY = base64.b64encode(hashlib.sha256(b"tme-integration-vault-key").digest()).decode()
+
+_HASHED_TOKEN = "910000001:HASH-ROUTED-TOKEN"
+_FALLBACK_TOKEN = "910000002:UNMIGRATED-TOKEN"
+_ACCESSOR_TOKEN = "910000004:ACCESSOR-TOKEN"
+_BACKFILL_TOKEN = "910000006:BACKFILL-TOKEN"
+_IDEMPOTENT_TOKEN = "910000008:IDEMPOTENT-TOKEN"
+_POISONED_TOKEN = "910000007:POISONED-TOKEN"
+
+_BACKFILL_SCRIPT = REPO / "scripts" / "vault_backfill.py"
+
+
+def _load_backfill():
+    """Import ``scripts/vault_backfill.py`` by path (scripts/ is not a package)."""
+    spec = importlib.util.spec_from_file_location("vault_backfill", _BACKFILL_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec: a module-level @dataclass resolves its annotations
+    # through sys.modules.
+    sys.modules["vault_backfill"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+backfill = _load_backfill()
+
+
+def _use_vault_key(monkeypatch) -> None:
+    """Give this test a usable master key (the repo/CI sets none)."""
+    monkeypatch.setattr(settings, "vault_master_key", SecretStr(_MASTER_KEY))
+
+
+async def _owner_id(session, telegram_id: int = OWNER_TG_ID) -> int:
+    """The owning user's row id, creating the user on first sight."""
+    owner = (
+        await session.execute(select(User).where(User.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+    if owner is None:
+        owner = User(telegram_id=telegram_id, username="owner")
+        session.add(owner)
+        await session.flush()
+    return owner.id
+
+
+async def _add_bot(
+    *,
+    token: str | None,
+    token_hash_value: str | None,
+    telegram_bot_id: int,
+    flow: dict | None = None,
+) -> int:
+    """Insert a bot row directly (no provisioning) and return its id."""
+    async with engine_module.session_scope() as session:
+        bot = BotModel(
+            token=token,
+            token_hash=token_hash_value,
+            telegram_bot_id=telegram_bot_id,
+            owner_id=await _owner_id(session),
+            is_active=True,
+        )
+        bot.config = BotConfig(
+            flow=flow or {"bot_type": "generic", "welcome_message": "HASH-ROUTED"}
+        )
+        session.add(bot)
+        await session.flush()
+        return bot.id
+
+
+async def _store_token(bot_id: int, token: str) -> None:
+    async with engine_module.session_scope() as session:
+        await store_bot_token(session, bot_id=bot_id, token=token)
+
+
+async def _forget_token(bot_id: int) -> None:
+    async with engine_module.session_scope() as session:
+        await delete_bot_token(session, bot_id=bot_id)
+
+
+async def _vaulted_value(bot_id: int) -> str | None:
+    async with engine_module.session_scope() as session:
+        return await load_bot_token(session, bot_id=bot_id)
+
+
+async def _bot_state(bot_id: int) -> tuple[str | None, str | None]:
+    """``(token, token_hash)`` straight from Postgres."""
+    async with engine_module.session_scope() as session:
+        bot = (
+            await session.execute(select(BotModel).where(BotModel.id == bot_id))
+        ).scalar_one_or_none()
+        assert bot is not None
+        return bot.token, bot.token_hash
+
+
+async def _plaintext_count() -> int:
+    async with engine_module.session_scope() as session:
+        rows = await session.execute(select(BotModel.token))
+        return sum(1 for (token,) in rows if token is not None)
+
+
+async def _all_states() -> list[tuple[int, str | None, str | None]]:
+    """Every bot's ``(id, token, token_hash)`` — the whole table, sorted."""
+    async with engine_module.session_scope() as session:
+        rows = await session.execute(select(BotModel.id, BotModel.token, BotModel.token_hash))
+        return sorted((bot_id, token, hash_) for bot_id, token, hash_ in rows)
+
+
+async def _resolve_token(bot_id: int) -> str | None:
+    """Resolve one bot through the S0.3 accessor (vault first)."""
+    async with engine_module.session_scope() as session:
+        bot = (
+            await session.execute(select(BotModel).where(BotModel.id == bot_id))
+        ).scalar_one_or_none()
+        assert bot is not None
+        return await resolve_bot_token(session, bot)
+
+
+def test_hash_routing_resolves_a_row_with_no_plaintext(test_stack, monkeypatch) -> None:
+    """A webhook token captured purely by ``token_hash`` returns the right config.
+
+    The row's plaintext column is already NULL (the post-backfill state), so a
+    hash lookup is the only way it can resolve — and the cache entry must be
+    keyed by the hash, never by the raw token.
+    """
+    _use_vault_key(monkeypatch)
+    raw = _HASHED_TOKEN
+    bot_id = test_stack(
+        _add_bot(token=None, token_hash_value=token_hash(raw), telegram_bot_id=910000001)
+    )
+    test_stack(_store_token(bot_id, raw))  # vaulted, plaintext already cleared
+
+    live = test_stack(cache_module.get_bot_config(raw))
+    assert live is not None
+    assert live.welcome_message == "HASH-ROUTED"
+
+    redis = cache_module.redis_client
+    assert test_stack(redis.get(f"botcfg:{token_hash(raw)}")) is not None
+    assert test_stack(redis.get(f"botcfg:{raw}")) is None  # never keyed by plaintext
+
+
+def test_plaintext_fallback_still_resolves_an_unmigrated_row(test_stack) -> None:
+    """Rows the backfill has not touched keep working (transitional fallback)."""
+    raw = _FALLBACK_TOKEN
+    test_stack(_add_bot(token=raw, token_hash_value=None, telegram_bot_id=910000002))
+
+    live = test_stack(cache_module.get_bot_config(raw))
+    assert live is not None
+    assert live.welcome_message == "HASH-ROUTED"
+    # …and it is cached under the hash the fallback implicitly computed.
+    assert test_stack(cache_module.redis_client.get(f"botcfg:{token_hash(raw)}")) is not None
+
+
+def test_invalidation_drops_the_hash_keyed_entry(test_stack) -> None:
+    """Config invalidation must clear ``botcfg:{token_hash}``, not the old key."""
+    raw = _FALLBACK_TOKEN
+    key = f"botcfg:{token_hash(raw)}"
+
+    assert test_stack(cache_module.get_bot_config(raw)) is not None
+    assert test_stack(cache_module.redis_client.get(key)) is not None
+
+    test_stack(cache_module.invalidate_bot_config(raw))
+
+    assert test_stack(cache_module.redis_client.get(key)) is None
+    assert test_stack(cache_module.redis_client.get(f"botcfg:{raw}")) is None
+
+
+def test_unknown_token_is_negatively_cached_for_one_minute(test_stack) -> None:
+    """The negative cache (and its TTL) survives the switch to hash keys."""
+    unknown = "999999999:NEVER-PROVISIONED"
+    key = f"botcfg:{token_hash(unknown)}"
+
+    assert test_stack(cache_module.get_bot_config(unknown)) is None
+    assert test_stack(cache_module.redis_client.get(key)) == b"\x00"
+    ttl = test_stack(cache_module.redis_client.ttl(key))
+    assert 0 < ttl <= 60
+    assert test_stack(cache_module.redis_client.get(f"botcfg:{unknown}")) is None
+
+
+def test_token_accessor_prefers_the_vault_then_falls_back(test_stack, monkeypatch) -> None:
+    """The one accessor: vault wins, the transitional column answers otherwise."""
+    _use_vault_key(monkeypatch)
+    raw = _ACCESSOR_TOKEN
+    bot_id = test_stack(
+        _add_bot(token=raw, token_hash_value=token_hash(raw), telegram_bot_id=910000004)
+    )
+
+    # Not vaulted yet → the plaintext column answers (rollout state).
+    assert test_stack(_resolve_token(bot_id)) == raw
+
+    # A rotated token lives in the vault: the vault wins over the stale column.
+    test_stack(_store_token(bot_id, raw + "-ROTATED"))
+    assert test_stack(_resolve_token(bot_id)) == raw + "-ROTATED"
+
+    # Vault row gone → back to the plaintext fallback (no crash, no stale value).
+    test_stack(_forget_token(bot_id))
+    assert test_stack(_resolve_token(bot_id)) == raw
+
+
+def test_without_a_master_key_behaviour_is_unchanged(test_stack, monkeypatch, caplog) -> None:
+    """No ``VAULT_MASTER_KEY`` → today's behaviour byte-for-byte, plus the warning."""
+    monkeypatch.setattr(settings, "vault_master_key", None)
+    monkeypatch.setattr("tme.services.managed_bots.register_webhook", AsyncMock(return_value=False))
+    raw = "910000005:NO-KEY-TOKEN"
+
+    bot_row = test_stack(provision_managed_bot(token=raw, owner_telegram_id=OWNER_TG_ID))
+
+    assert bot_row.token == raw  # plaintext stays the source of truth
+    assert bot_row.token_hash == token_hash(raw)  # hash is set either way
+    assert test_stack(_vaulted_value(bot_row.id)) is None  # nothing vaulted
+    assert "VAULT_MASTER_KEY not set" in caplog.text  # the loud warning
+    assert test_stack(cache_module.get_bot_config(raw)) is not None  # still serving
+
+
+def test_backfill_dry_run_writes_nothing(test_stack, monkeypatch) -> None:
+    """Dry run is the default and must be a pure read (plus its own report)."""
+    _use_vault_key(monkeypatch)
+    raw = _BACKFILL_TOKEN
+    bot_id = test_stack(_add_bot(token=raw, token_hash_value=None, telegram_bot_id=910000006))
+    before = test_stack(_all_states())
+
+    summary = test_stack(backfill.run_backfill(apply=False))
+
+    assert summary.hash_set >= 1  # this row would get its hash
+    assert summary.vaulted >= 1  # …and its token vaulted
+    assert summary.cleared == 0
+    assert summary.failed == 0
+    assert test_stack(_all_states()) == before  # nothing written
+    assert test_stack(_vaulted_value(bot_id)) is None
+
+
+def test_backfill_dry_run_detects_a_hash_mismatch_without_repairing_it(
+    test_stack, monkeypatch
+) -> None:
+    """A rotated pepper is reported (hash-set) but never silently rewritten."""
+    _use_vault_key(monkeypatch)
+    monkeypatch.setattr(settings, "vault_pepper", SecretStr("rotated-pepper"))
+    before = test_stack(_all_states())
+
+    summary = test_stack(backfill.run_backfill(apply=False))
+
+    assert summary.hash_set >= 1  # every stored hash no longer matches
+    assert summary.cleared == 0
+    assert test_stack(_all_states()) == before
+
+
+def test_backfill_apply_is_idempotent(test_stack, monkeypatch) -> None:
+    """``--apply`` hashes + vaults; a second run changes nothing at all."""
+    _use_vault_key(monkeypatch)
+    raw = _IDEMPOTENT_TOKEN
+    bot_id = test_stack(_add_bot(token=raw, token_hash_value=None, telegram_bot_id=910000008))
+
+    first = test_stack(backfill.run_backfill(apply=True))
+    assert first.hash_set >= 1
+    assert first.vaulted >= 1
+    assert first.failed == 0
+    assert first.cleared == 0  # never without --clear-plaintext
+
+    assert test_stack(_bot_state(bot_id)) == (raw, token_hash(raw))
+    assert test_stack(_vaulted_value(bot_id)) == raw
+
+    after_first = test_stack(_all_states())
+    second = test_stack(backfill.run_backfill(apply=True))
+
+    assert (second.hash_set, second.vaulted, second.cleared, second.failed) == (0, 0, 0, 0)
+    assert second.verified >= 1
+    assert test_stack(_all_states()) == after_first
+
+
+def test_backfill_aborts_before_clearing_when_a_round_trip_fails(test_stack, monkeypatch) -> None:
+    """A vault/plaintext mismatch stops the run and clears nothing."""
+    _use_vault_key(monkeypatch)
+    raw = _POISONED_TOKEN
+    bot_id = test_stack(_add_bot(token=raw, token_hash_value=None, telegram_bot_id=910000007))
+    # A vault row holding a different value: one of the two copies is stale.
+    test_stack(_store_token(bot_id, "910000007:SOMETHING-ELSE"))
+    before = test_stack(_all_states())
+
+    with pytest.raises(backfill.VaultBackfillError):
+        test_stack(backfill.run_backfill(apply=True, clear_plaintext=True))
+
+    # Nothing was cleared (and the aborted batch rolled back) anywhere.
+    assert test_stack(_all_states()) == before
+    assert test_stack(_plaintext_count()) == len([s for s in before if s[1] is not None])
+
+    # The mismatch was the only problem: dropping it lets the run complete.
+    test_stack(_forget_token(bot_id))
+    recovered = test_stack(backfill.run_backfill(apply=True))
+    assert recovered.failed == 0
+    assert test_stack(_vaulted_value(bot_id)) == raw
+
+
+def test_cli_refuses_clear_plaintext_without_apply(capsys) -> None:
+    """``--clear-plaintext`` alone is a usage error, not a silent no-op."""
+    assert backfill.main(["--clear-plaintext"]) == 2
+    assert "--apply" in capsys.readouterr().err
+
+
+def test_backfill_clear_plaintext_rollout_then_hash_routing_only(test_stack, monkeypatch) -> None:
+    """The payoff: with every plaintext token gone, bots still resolve + send.
+
+    Runs last on purpose — it clears ``bots.token`` for the whole test database.
+    """
+    _use_vault_key(monkeypatch)
+    raw = _HASHED_TOKEN  # already has plaintext NULL + a vault row
+    fallback_raw = _FALLBACK_TOKEN
+
+    summary = test_stack(backfill.run_backfill(apply=True, clear_plaintext=True))
+
+    assert summary.failed == 0
+    assert summary.cleared >= 1
+    assert test_stack(_plaintext_count()) == 0  # no plaintext token left anywhere
+
+    ids = test_stack(_all_states())
+    assert all(token is None for _bot_id, token, _hash in ids)
+    assert all(hash_ is not None for _bot_id, _token, hash_ in ids)
+
+    # Resolution is now purely hash-based, and the accessor still hands the
+    # real token to the send path (from the vault).
+    assert test_stack(cache_module.get_bot_config(fallback_raw)) is not None
+    assert test_stack(cache_module.get_bot_config(raw)) is not None
+    cleared_id = next(bot_id for bot_id, token, _hash in ids if token is None)
+    resolved = test_stack(_resolve_token(cleared_id))
+    assert resolved is not None
+    assert resolved == test_stack(_vaulted_value(cleared_id))

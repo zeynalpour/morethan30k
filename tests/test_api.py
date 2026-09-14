@@ -115,6 +115,9 @@ def _bot(*, config_flow: dict | None = None, is_active: bool = True) -> SimpleNa
         webhook_registered=True,
         created_at=datetime.now(UTC),
         token="123456789:SECRET_TOKEN",
+        # S0.3: every real row carries the routing hash (migration 0005 + the
+        # backfill); the fake row must too, or invalidation looks unlike prod.
+        token_hash="b" * 64,
         config=SimpleNamespace(flow=config_flow or {"bot_type": "generic"}),
     )
 

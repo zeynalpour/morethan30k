@@ -72,20 +72,30 @@ envelope encryption). AI gateway bots need key storage immediately.
 
 **Landed** (`734761f`): app-level envelope encryption — AES-256-GCM
 per-secret DEK wrapped by `VAULT_MASTER_KEY`; `secrets` table keyed
-`(kind, ref_id)`; peppered HMAC `bots.token_hash` for hot-path lookup
-(no decryption when routing); provisioning vaults new tokens and sets the
-hash. Works without a master key (loud warning, plaintext column stays
-the source of truth) so existing stacks keep running during rollout —
-set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in `.env` to activate.
+`(kind, ref_id)`; peppered HMAC `bots.token_hash`; provisioning vaults new
+tokens and sets the hash. Works without a master key (loud warning,
+plaintext column stays the source of truth) so existing stacks keep
+running during rollout — set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in `.env`
+to activate.
+
+> **Correction (issue #28).** `token_hash` was *stored* by 734761f but never
+> used to *resolve* anything — the resolver kept matching `bots.token`, the
+> cache key stayed `botcfg:{raw token}`, `bots.token` was NOT NULL, and there
+> was no backfill job. Hash routing is live only from 0006 + the activation
+> PR: lookup and cache are hash-keyed (`services/bot_lookup.py`,
+> `botcfg:{token_hash}`) with the plaintext column as the transitional
+> fallback, `bots.token` is nullable, and `scripts/vault_backfill.py` moves a
+> stack over per stack.
 
 **Checklist**
 
 - [x] Choose and implement the encryption layer. (AES-GCM envelope,
       `cryptography` package.)
 - [x] Migrate `bots.token` / future key columns to encrypted storage.
-      (`secrets` table via migration 0005; `bots.token` still populated —
-      plaintext column is dropped in a follow-up once every row has a
-      vault copy. AI-gateway keys will reuse `store_secret`.)
+      (`secrets` table via migration 0005; the write path itself had a latent
+      defect — 0005 created the table without the `created_at`/`updated_at`
+      columns every model inherits, so no secret could be written; fixed in
+      0006. AI-gateway keys will reuse `store_secret`.)
 - [x] Decrypt lazily in the cache/provisioning path; never in logs.
       (Decryption only in the adapter path; `…last6` display convention
       unchanged; `last_four` on the vault row for UI.)
@@ -93,14 +103,21 @@ set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in `.env` to activate.
 **Acceptance criteria**
 
 - [x] Tokens/keys are not plaintext in the DB. (Vaulted rows are; the
-      transitional `bots.token` column remains until the data migration —
-      tracked below.)
+      transitional `bots.token` column remains until a stack is backfilled —
+      see the activation note below.)
 - [x] Read/write paths handle legacy plaintext rows once. (No master key →
       provisioning skips vaulting with a warning; nothing breaks.)
 
-**Follow-up (next session)** — backfill job: vault all existing
-`bots.token` rows + null the plaintext column (separate migration 0006);
-switch webhook resolution to `token_hash` lookup.
+**Activated (issue #28)** — the remaining S0.3 work landed: hash routing with
+a transitional plaintext fallback (`services/bot_lookup.py`, cache key
+`botcfg:{token_hash}`), one vault-first token accessor, `bots.token` nullable
+(migration `0006`) and `scripts/vault_backfill.py` (dry-run default; sets the
+hash → vaults → verifies a decrypt round-trip → only clears the plaintext with
+`--clear-plaintext`), plus the docs corrections and the master-key rotation
+procedure (re-wrap DEKs only, docs/architecture/04-security.md § Secrets).
+What is left is *operational*, per stack: set `VAULT_MASTER_KEY` +
+`VAULT_PEPPER`, run the backfill, then drop `bots.token` in a later release
+once dev/test/prod are all verified.
 
 ### S0.4 — Owner bot-settings dashboard (BotFather-style mini app)
 
@@ -489,12 +506,18 @@ the model call; kept stretch until those land.
 
 ## Open follow-ups carried from earlier phases
 
-- **S0.3 vault activation** — code landed (envelope encryption, `secrets`
-  table, `token_hash` hot-path lookup), but no stack has `VAULT_MASTER_KEY`
-  set, so every token is still plaintext in `bots.token` (dev: 9/9 rows).
-  Remaining: backfill job (vault all existing rows + null the plaintext
-  column, migration 0006) and set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in
-  .env across dev/test/prod.
+- **S0.3 vault activation** — mechanism and activation both landed (envelope
+  encryption, `secrets` table, hash routing by `token_hash`, one vault-first
+  token accessor, `bots.token` nullable in migration 0006, backfill job
+  `scripts/vault_backfill.py`). What remains is **per stack, by the owner**,
+  because no stack has `VAULT_MASTER_KEY` set yet, so every token is still
+  plaintext in `bots.token`: set `VAULT_MASTER_KEY` + `VAULT_PEPPER` in
+  `.env`, run `uv run python scripts/vault_backfill.py` (dry run), then
+  `--apply`, confirm the summary, then `--apply --clear-plaintext`. Back the
+  master key up **offline, per stack, before any clearing** — a lost key
+  makes every vaulted token unrecoverable (rotation procedure:
+  docs/architecture/04-security.md § Secrets). Drop the `bots.token` column in
+  a later release, once dev/test/prod are all backfilled and verified.
 
 ---
 

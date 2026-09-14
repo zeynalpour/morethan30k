@@ -12,6 +12,7 @@ Pins two production bugs (Phase 0) and the Phase 2 S2.2 template picker:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -38,6 +39,27 @@ from tme.templates import TemplateSpec, get_template, list_templates
 
 #: The exact registry order the picker must mirror (single source of truth).
 _TEMPLATE_IDS = [spec.id for spec in list_templates()]
+
+
+def _stub_token_accessor(monkeypatch) -> None:
+    """Serve the S0.3 vault-first token accessor from the fake rows.
+
+    ``_show_my_bots`` resolves real tokens through
+    :func:`tme.services.vault.resolve_bot_tokens` inside a DB session (the
+    vault holds the token once a stack is backfilled). These tests run without
+    Postgres, so both seams are stubbed: the session yields nothing and the
+    accessor reads the in-memory rows.
+    """
+
+    @asynccontextmanager
+    async def _scope():
+        yield None
+
+    async def _resolve(_session, rows):
+        return {row.id: getattr(row, "token", None) for row in rows}
+
+    monkeypatch.setattr("tme.routers.main_bot.session_scope", _scope)
+    monkeypatch.setattr("tme.routers.main_bot.resolve_bot_tokens", _resolve)
 
 
 def _make_event() -> ManagedBotUpdated:
@@ -270,6 +292,7 @@ def test_my_bots_lists_owner_bots_with_settings_buttons(monkeypatch) -> None:
     bots = [SimpleNamespace(id=1, username="alpha"), SimpleNamespace(id=2, username=None)]
     lst = AsyncMock(return_value=bots)
     monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", lst)
+    _stub_token_accessor(monkeypatch)
 
     asyncio.run(on_my_bots(message, fake_bot))
 
@@ -312,6 +335,7 @@ def test_my_bots_hides_archived_bots(monkeypatch) -> None:
         SimpleNamespace(id=2, username="gone", token="2:dead"),
     ]
     monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
+    _stub_token_accessor(monkeypatch)
 
     async def _probe(pairs):
         return {bot_id: bot_id != 2 for bot_id, _token in pairs}
@@ -331,6 +355,7 @@ def test_my_bots_all_archived_shows_empty_state(monkeypatch) -> None:
     fake_bot = AsyncMock()
     bots = [SimpleNamespace(id=7, username="gone", token="7:dead")]
     monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
+    _stub_token_accessor(monkeypatch)
 
     async def _probe(pairs):
         return {bot_id: False for bot_id, _token in pairs}
@@ -350,6 +375,7 @@ def test_my_bots_fails_open_when_probe_has_no_verdict(monkeypatch) -> None:
     bots = [SimpleNamespace(id=3, username="maybe", token="3:unknown")]
     monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
     monkeypatch.setattr("tme.routers.main_bot.probe_bots", AsyncMock(return_value={}))
+    _stub_token_accessor(monkeypatch)
 
     asyncio.run(on_my_bots(message, fake_bot))
 
