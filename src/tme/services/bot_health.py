@@ -64,6 +64,19 @@ async def probe_token(token: str) -> bool:
         return True
 
 
+async def cached_bot_liveness(bot_id: int) -> bool | None:
+    """The cached verdict only — never probes Telegram.
+
+    Write paths must not call the Bot API: they consult this and refuse only
+    when a verdict already exists and says the token is dead. ``None`` means
+    "unknown, allow it" (a dashboard load will probe and cache the answer).
+    """
+    cached = await redis_client.get(_cache_key(bot_id))
+    if cached is None:
+        return None
+    return cached == _ALIVE
+
+
 async def bot_is_alive(bot_id: int, token: str) -> bool:
     """Cached liveness verdict for one bot (:data:`LIVENESS_TTL` seconds)."""
     key = _cache_key(bot_id)

@@ -22,7 +22,12 @@ from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotType, User
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.auth import validate_telegram_init_data
-from tme.services.bot_health import bot_is_alive, forget_bot_liveness, probe_bots
+from tme.services.bot_health import (
+    bot_is_alive,
+    cached_bot_liveness,
+    forget_bot_liveness,
+    probe_bots,
+)
 from tme.services.managed_bots import _default_config_for, reclone_bot
 from tme.services.vault import delete_bot_token
 from tme.templates import (
@@ -168,6 +173,27 @@ def _summarize(bot: BotModel, *, alive: bool | None = None) -> BotSummary:
     )
 
 
+async def _reject_if_archived(bot: BotModel) -> None:
+    """Refuse writes to a bot Telegram has already rejected.
+
+    An archived bot was deleted in BotFather: it has no live token, so an edit
+    is either silently useless or resurrects a bot the owner removed. The row
+    itself is kept (soft delete) so history stays available later.
+
+    Uses the **cached** verdict only — a write path never calls the Bot API
+    (a probe per save would add latency and could block a live bot when
+    Telegram is unreachable). No cached verdict means "allow"; the dashboard
+    list already probes and caches it.
+    """
+    if not bot.is_active:
+        return
+    if await cached_bot_liveness(bot.id) is False:
+        raise HTTPException(
+            status_code=409,
+            detail="Bot was deleted in BotFather; archived bots cannot be edited.",
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Endpoints
 # --------------------------------------------------------------------------- #
@@ -237,6 +263,7 @@ async def update_bot_config(
         bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None or bot.config is None:
             raise HTTPException(status_code=404, detail="Bot not found")
+        await _reject_if_archived(bot)
         bot.config.flow = parsed.model_dump()
         bot.bot_type = parsed.bot_type
         token = bot.token  # captured before the session closes

@@ -299,6 +299,65 @@ def test_my_bots_empty_state(monkeypatch) -> None:
     assert "don't have any bots" in text
 
 
+def test_my_bots_hides_archived_bots(monkeypatch) -> None:
+    """A bot deleted in BotFather must not be listed or offered for editing.
+
+    Archived bots were listed with a working settings button, so the owner
+    could reopen and edit a bot they had deleted.
+    """
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42))
+    fake_bot = AsyncMock()
+    bots = [
+        SimpleNamespace(id=1, username="alpha", token="1:live"),
+        SimpleNamespace(id=2, username="gone", token="2:dead"),
+    ]
+    monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
+
+    async def _probe(pairs):
+        return {bot_id: bot_id != 2 for bot_id, _token in pairs}
+
+    monkeypatch.setattr("tme.routers.main_bot.probe_bots", _probe)
+
+    asyncio.run(on_my_bots(message, fake_bot))
+
+    kb = fake_bot.send_message.await_args.kwargs["reply_markup"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert labels == ["⚙️ @alpha"]
+
+
+def test_my_bots_all_archived_shows_empty_state(monkeypatch) -> None:
+    """When every bot is archived the owner sees the empty state, not ghosts."""
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42))
+    fake_bot = AsyncMock()
+    bots = [SimpleNamespace(id=7, username="gone", token="7:dead")]
+    monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
+
+    async def _probe(pairs):
+        return {bot_id: False for bot_id, _token in pairs}
+
+    monkeypatch.setattr("tme.routers.main_bot.probe_bots", _probe)
+
+    asyncio.run(on_my_bots(message, fake_bot))
+
+    text = fake_bot.send_message.await_args.kwargs["text"]
+    assert "don't have any bots" in text
+
+
+def test_my_bots_fails_open_when_probe_has_no_verdict(monkeypatch) -> None:
+    """An inconclusive probe must never hide a bot from its owner."""
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42))
+    fake_bot = AsyncMock()
+    bots = [SimpleNamespace(id=3, username="maybe", token="3:unknown")]
+    monkeypatch.setattr("tme.routers.main_bot.list_bots_for_owner", AsyncMock(return_value=bots))
+    monkeypatch.setattr("tme.routers.main_bot.probe_bots", AsyncMock(return_value={}))
+
+    asyncio.run(on_my_bots(message, fake_bot))
+
+    kb = fake_bot.send_message.await_args.kwargs["reply_markup"]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert labels == ["⚙️ @maybe"]
+
+
 def test_my_bots_button_filter_matches_emoji_variant() -> None:
     """The reply-keyboard button sends '🤖 My Bots'; the filter must accept it."""
     filt = F.text.in_(["My Bots", "🤖 My Bots", "🤖 ربات‌های من"])

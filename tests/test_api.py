@@ -82,6 +82,12 @@ def _install(
 
     monkeypatch.setattr("tme.api.routes.probe_bots", _fake_probe_bots)
     monkeypatch.setattr("tme.api.routes.bot_is_alive", _fake_bot_is_alive)
+
+    # Write paths consult the cached verdict only (never the Bot API).
+    async def _fake_cached_liveness(_bot_id):
+        return None if alive else False
+
+    monkeypatch.setattr("tme.api.routes.cached_bot_liveness", _fake_cached_liveness)
     monkeypatch.setattr("tme.api.routes.forget_bot_liveness", AsyncMock())
     monkeypatch.setattr("tme.api.routes.delete_bot_token", AsyncMock())
     return invalidate
@@ -360,6 +366,31 @@ def test_delete_bot_not_owned_404(monkeypatch) -> None:
 
 def test_delete_bot_requires_auth() -> None:
     assert client.delete("/api/bots/7").status_code == 401
+
+
+def test_update_config_on_archived_bot_is_refused(monkeypatch) -> None:
+    """An archived bot is not editable: no silent write to a deleted bot."""
+    invalidate = _install(monkeypatch, bot_row=_bot(), alive=False)
+    resp = client.patch(
+        "/api/bots/1/config",
+        json={"flow": {"bot_type": "generic", "welcome_message": "edited"}},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 409
+    assert "cannot be edited" in resp.json()["detail"]
+    invalidate.assert_not_awaited()
+
+
+def test_update_config_on_live_bot_still_works(monkeypatch) -> None:
+    """The archived guard must not block a healthy bot."""
+    invalidate = _install(monkeypatch, bot_row=_bot(), alive=True)
+    resp = client.patch(
+        "/api/bots/1/config",
+        json={"flow": {"bot_type": "generic", "welcome_message": "edited"}},
+        headers=_AUTH,
+    )
+    assert resp.status_code == 200
+    invalidate.assert_awaited()
 
 
 # Templates (S2.3 — versioned templates + re-clone)
