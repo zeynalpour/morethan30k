@@ -239,6 +239,115 @@ def test_patch_config_not_owned_404(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Per-step translations + main language (issue #23 round trip)
+# --------------------------------------------------------------------------- #
+def _step_flow() -> dict:
+    return {
+        "bot_type": "generic",
+        "active_modules": ["steps"],
+        "steps": [
+            {
+                "id": "rating",
+                "prompt": "How would you rate us? ⭐",
+                "options": [
+                    {"label": "😍 Excellent", "value": "excellent"},
+                    {"label": "🙁 Poor", "value": "poor"},
+                ],
+            },
+            {"id": "comment", "prompt": "Anything to add? 💬", "answer_type": "free_text"},
+        ],
+    }
+
+
+def test_patch_config_round_trips_per_step_translations(monkeypatch) -> None:
+    """The editor saves per-step copy + main_language and reads both back.
+
+    Pins the whole write path: schema validation keeps every step id the
+    owner edited (including ids the flow no longer has) and the read-back
+    serves exactly what was stored.
+    """
+    bot = _bot(config_flow=_step_flow())
+    invalidate = _install(monkeypatch, bot_row=bot)
+
+    flow = {
+        **_step_flow(),
+        "main_language": "fa",
+        "translations": {
+            "fa": {
+                "welcome_message": "خوش آمدید",
+                "steps": {
+                    "rating": {
+                        "prompt": "به ما چه امتیازی می‌دهید؟ ⭐",
+                        "options": ["😍 عالی", "🙁 ضعیف"],
+                    },
+                    "comment": {"prompt": "چیزی برای اضافه کردن دارید؟ 💬"},
+                    "ghost": {"prompt": "step no longer in the flow"},
+                },
+            }
+        },
+    }
+    patched = client.patch("/api/bots/7/config", json={"flow": flow}, headers=_AUTH)
+    assert patched.status_code == 200
+
+    read_back = client.get("/api/bots/7/config", headers=_AUTH).json()
+    assert read_back["main_language"] == "fa"
+    assert read_back["translations"]["fa"]["steps"]["rating"] == {
+        "prompt": "به ما چه امتیازی می‌دهید؟ ⭐",
+        "options": ["😍 عالی", "🙁 ضعیف"],
+    }
+    assert read_back["translations"]["fa"]["steps"]["comment"]["prompt"].startswith("چیزی")
+    # An id the flow doesn't have is stored, never silently dropped.
+    assert "ghost" in read_back["translations"]["fa"]["steps"]
+    # The steps themselves are untouched by the translation write.
+    assert [s["id"] for s in read_back["steps"]] == ["rating", "comment"]
+    invalidate.assert_awaited_once_with("123456789:SECRET_TOKEN")
+
+
+def test_patch_config_blank_main_language_is_stored_unset(monkeypatch) -> None:
+    """A cleared selector must never persist "" (blank = unset, never sent)."""
+    bot = _bot()
+    _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "main_language": ""}},
+        headers=_AUTH,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["main_language"] is None
+
+
+def test_patch_config_rejects_invalid_main_language(monkeypatch) -> None:
+    bot = _bot()
+    invalidate = _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "main_language": "persian"}},
+        headers=_AUTH,
+    )
+
+    assert resp.status_code == 422
+    invalidate.assert_not_awaited()
+
+
+def test_patch_config_rejects_malformed_step_translation(monkeypatch) -> None:
+    """Per-step copy is validated at write time like every other field."""
+    bot = _bot()
+    invalidate = _install(monkeypatch, bot_row=bot)
+
+    resp = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "translations": {"fa": {"steps": "oops"}}}},
+        headers=_AUTH,
+    )
+
+    assert resp.status_code == 422
+    invalidate.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
 # Management knobs (PATCH /api/bots/{id})
 # --------------------------------------------------------------------------- #
 def test_toggle_active_disables_bot(monkeypatch) -> None:

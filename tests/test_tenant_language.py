@@ -9,13 +9,15 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from aiogram import F
-from aiogram.types import Chat, Message, User
+from aiogram.types import CallbackQuery, Chat, Message, User
 from pydantic import TypeAdapter
 
 from tme.routers.dynamic import (
     _language_keyboard,
     on_language_command,
     on_language_pick,
+    on_step_option,
+    on_step_start,
 )
 from tme.schemas.bot_config import BotConfigUnion
 
@@ -126,6 +128,128 @@ def test_menu_click_filter_excludes_language_picks() -> None:
     assert filt.resolve(SimpleNamespace(data="about")) is True
     assert filt.resolve(SimpleNamespace(data="lang:fa")) is False
     assert filt.resolve(SimpleNamespace(data="lang:auto")) is False
+
+
+# --------------------------------------------------------------------------- #
+# Issue #23 — the router hands the resolved language to the shared step engine
+# --------------------------------------------------------------------------- #
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def set(self, key: str, value: bytes, ex: int | None = None) -> None:
+        self.store[key] = value
+
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+
+class _FakeBot:
+    """Records outgoing step prompts; stands in for aiogram's Bot."""
+
+    def __init__(self, bot_id: int = 555) -> None:
+        self.id = bot_id
+        self.sent: list[str] = []
+
+    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> None:
+        self.sent.append(text)
+
+
+def _step_config(*, main_language: str | None = "fa"):
+    return TypeAdapter(BotConfigUnion).validate_python(
+        {
+            "bot_type": "generic",
+            "active_modules": ["steps"],
+            "main_language": main_language,
+            "steps": [
+                {
+                    "id": "rating",
+                    "prompt": "How would you rate us? ⭐",
+                    "options": [{"label": "😍 Excellent", "value": "excellent"}],
+                },
+                {"id": "comment", "prompt": "Anything to add? 💬", "answer_type": "free_text"},
+            ],
+            "translations": {
+                "fa": {
+                    "steps": {
+                        "rating": {
+                            "prompt": "به ما چه امتیازی می‌دهید؟ ⭐",
+                            "options": ["😍 عالی"],
+                        },
+                        "comment": {"prompt": "چیزی برای اضافه کردن دارید؟ 💬"},
+                    }
+                }
+            },
+        }
+    )
+
+
+def _callback(data: str, bot, message: Message | None = None) -> CallbackQuery:
+    return CallbackQuery(
+        id="1",
+        from_user=User(id=77, is_bot=False, first_name="Tester"),
+        chat_instance="c",
+        data=data,
+        message=(message or _message()).as_(bot),
+    )
+
+
+def test_step_start_prompt_is_rendered_in_the_users_language(monkeypatch) -> None:
+    """on_step_start → start_flow_at must carry ``language_code`` (issue #23)."""
+    monkeypatch.setattr("tme.services.steps.redis_client", _FakeRedis())
+    bot = _FakeBot()
+
+    with mock.patch.object(CallbackQuery, "answer", new=AsyncMock()):
+        asyncio.run(on_step_start(_callback("step:0", bot), _step_config(), "fa"))
+
+    assert bot.sent == ["به ما چه امتیازی می‌دهید؟ ⭐"]
+
+
+def test_step_option_advances_with_localized_copy(monkeypatch) -> None:
+    """The next step's prompt is localized too — same seam, engine-side."""
+    monkeypatch.setattr("tme.services.steps.redis_client", _FakeRedis())
+    bot = _FakeBot()
+    config = _step_config()
+
+    with mock.patch.object(CallbackQuery, "answer", new=AsyncMock()):
+        asyncio.run(on_step_start(_callback("step:0", bot), config, "fa"))
+        asyncio.run(on_step_option(_callback("stepopt:0:0", bot), config, "fa"))
+
+    assert bot.sent == ["به ما چه امتیازی می‌دهید؟ ⭐", "چیزی برای اضافه کردن دارید؟ 💬"]
+
+
+def test_step_start_without_a_language_renders_the_base_copy(monkeypatch) -> None:
+    """Unset language + no main_language → the base flow (today's behaviour).
+
+    With main_language="fa" the Persian step copy IS the right answer for a
+    user with no language, so this pins the un-declared case explicitly.
+    """
+    monkeypatch.setattr("tme.services.steps.redis_client", _FakeRedis())
+    config = TypeAdapter(BotConfigUnion).validate_python(
+        {**_step_config().model_dump(), "main_language": None}
+    )
+    bot = _FakeBot()
+
+    with mock.patch.object(CallbackQuery, "answer", new=AsyncMock()):
+        asyncio.run(on_step_start(_callback("step:0", bot), config, None))
+
+    assert bot.sent == ["How would you rate us? ⭐"]
+
+
+def test_step_start_uses_the_main_language_when_no_user_language_is_known(
+    monkeypatch,
+) -> None:
+    """The main language is the middle layer — it answers for unknown users."""
+    monkeypatch.setattr("tme.services.steps.redis_client", _FakeRedis())
+    bot = _FakeBot()
+
+    with mock.patch.object(CallbackQuery, "answer", new=AsyncMock()):
+        asyncio.run(on_step_start(_callback("step:0", bot), _step_config(), None))
+
+    assert bot.sent == ["به ما چه امتیازی می‌دهید؟ ⭐"]
 
 
 def _message() -> Message:

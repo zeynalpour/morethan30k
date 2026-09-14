@@ -25,6 +25,31 @@ Statuses: **[NOW]** exists today · **[P x]** lands in phase x.
    partitioned.** The webhook path touches only `bots`, `bot_configs`,
    Redis. Everything else is behind the worker. [NOW, extended T2]
 
+## Config-in-flow: named storage with no table
+
+Rule 1 makes `bot_configs.flow` the storage for behaviour that is *data* —
+Pydantic validates it on every write and the engine reads it per request, so
+adding a behaviour is a schema field, not a migration. Recorded here so the
+"name the storage, or state explicitly that no table is needed" rule stays
+auditable:
+
+- **Phase 2 `steps` flow [NOW]** — a multi-step flow (`id`, `prompt`,
+  `options[{label,value}]`, `answer_type`, `correct_answers`) rides the flow
+  as an `extra="allow"` rider, interpreted by one shared engine
+  (`services/steps.py`). No table, no per-template code.
+- **Per-step translations + `main_language` [NOW, issue #23]** —
+  `translations[<code>].steps[<step id>]` carries only that step's localized
+  `prompt` and option *labels* (the option `value` is the answer key and is
+  never translated), and `BotConfigBase.main_language` (ISO-639-1, optional)
+  records the language the base copy is written in — it becomes the middle
+  layer of the fallback chain (**user language → main language → base copy**;
+  the middle layer is English when unset). Both are config-in-flow: **no
+  table, no migration.** Copy is not per-user state, it changes with every
+  edit, and the flow already carries and caches it — a `translations` table
+  would put copy on the request path and in Postgres for no gain. Unknown
+  step ids are stored as given and never read; blank copy is "unset" at
+  every layer (never sent).
+
 ## ERD (target)
 
 ```

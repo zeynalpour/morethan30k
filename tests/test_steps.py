@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from tme.core.i18n import localize
 from tme.schemas.bot_config import BotConfigSchema
 from tme.services import steps as steps_module
 from tme.services.steps import (
@@ -23,8 +24,10 @@ from tme.services.steps import (
     get_state,
     handle_option_tap,
     handle_text_answer,
+    localized_steps,
     parse_start_index,
     parse_steps,
+    render_step,
     start_flow,
     start_flow_at,
 )
@@ -96,6 +99,22 @@ def _quiz():
 
 def _form():
     return get_template("simple_form").seed
+
+
+def _translated_feedback():
+    """The feedback flow with the owner's Persian per-step copy (issue #23)."""
+    seed = _feedback().model_dump()
+    seed["main_language"] = "fa"
+    seed["translations"]["fa"] = {
+        "steps": {
+            "rating": {
+                "prompt": "به ما چه امتیازی می‌دهید؟ ⭐",
+                "options": ["😍 عالی", "🙂 خوب", "😐 متوسط", "🙁 ضعیف"],
+            },
+            "comment": {"prompt": "ممنون! چیزی برای اضافه کردن دارید؟ 💬"},
+        }
+    }
+    return BotConfigSchema.model_validate(seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +317,121 @@ class TestFlow:
         assert _run(start_flow(bot, plain, chat_id=100, user_id=7)) is False
         assert _run(handle_text_answer(bot, plain, 100, 7, "hi")) is False
         assert bot.sent == []
+
+
+# --------------------------------------------------------------------------- #
+# Localized steps (issue #23) — a Persian user gets Persian prompts
+# --------------------------------------------------------------------------- #
+class TestLocalizedFlow:
+    def test_persian_user_gets_persian_prompt_and_option_labels(
+        self, fake_redis, delivered
+    ) -> None:
+        bot = _FakeBot()
+        cfg = _translated_feedback()
+        assert (
+            _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=0, language_code="fa"))
+            is True
+        )
+
+        assert bot.sent[0]["text"] == "به ما چه امتیازی می‌دهید؟ ⭐"
+        keyboard = bot.sent[0]["reply_markup"]
+        labels = [b.text for row in keyboard.inline_keyboard for b in row]
+        assert labels[0] == "😍 عالی" and labels[3] == "🙁 ضعیف"
+        # Routing payloads stay language-independent (indices, not labels).
+        payloads = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+        assert payloads[:4] == ["stepopt:0:0", "stepopt:0:1", "stepopt:0:2", "stepopt:0:3"]
+
+    def test_main_language_localizes_users_without_a_translation(
+        self, fake_redis, delivered
+    ) -> None:
+        """main_language="fa": a German user (no de translation) gets Persian.
+
+        Without main_language the same user would get the flow's base copy —
+        pinning that both directions are reachable from data alone.
+        """
+        bot = _FakeBot()
+        cfg = _translated_feedback()
+        _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=0, language_code="de"))
+        assert bot.sent[0]["text"] == "به ما چه امتیازی می‌دهید؟ ⭐"
+
+        # Same flow, no main_language → base copy (today's behaviour).
+        base = BotConfigSchema.model_validate(
+            {**_translated_feedback().model_dump(), "main_language": None}
+        )
+        plain_bot = _FakeBot()
+        _run(start_flow_at(plain_bot, base, chat_id=100, user_id=8, index=0, language_code="de"))
+        assert plain_bot.sent[0]["text"] == "How would you rate us? ⭐"
+
+    def test_next_prompt_is_localized_and_values_are_untouched(self, fake_redis, delivered) -> None:
+        bot = _FakeBot()
+        cfg = _translated_feedback()
+        _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=0, language_code="fa"))
+
+        assert _run(handle_option_tap(bot, cfg, 100, 7, "stepopt:0:0", language_code="fa")) is True
+        assert bot.sent[1]["text"] == "ممنون! چیزی برای اضافه کردن دارید؟ 💬"
+
+        state = _run(get_state(bot.id, 7))
+        assert state is not None
+        # The stored answer is the option VALUE — never a translated label.
+        assert state.values["rating"] == "excellent"
+
+    def test_free_text_completion_still_delivers(self, fake_redis, delivered) -> None:
+        bot = _FakeBot()
+        cfg = _translated_feedback()
+        _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=0, language_code="fa"))
+        _run(handle_option_tap(bot, cfg, 100, 7, "stepopt:0:1", language_code="fa"))
+
+        assert _run(handle_text_answer(bot, cfg, 100, 7, "خیلی خوب", language_code="fa")) is True
+        assert len(delivered) == 1
+        assert "خیلی خوب" in delivered[0][1]
+
+    def test_terminal_step_is_still_terminal_when_localized(self, fake_redis, delivered) -> None:
+        """answer_type rides the flow, not the translation — `none` stays terminal."""
+        seed = _form().model_dump()
+        seed["translations"]["fa"] = {
+            "steps": {"done": {"prompt": "✅ ممنون! پاسخ‌های شما ثبت شد."}}
+        }
+        cfg = BotConfigSchema.model_validate(seed)
+
+        bot = _FakeBot()
+        assert (
+            _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=99, language_code="fa"))
+            is True
+        )
+        assert bot.sent[-1]["text"] == "✅ ممنون! پاسخ‌های شما ثبت شد."
+        assert _run(get_state(bot.id, 7)) is None  # terminal → nothing collected
+
+    def test_flow_without_step_translations_renders_the_base_copy(
+        self, fake_redis, delivered
+    ) -> None:
+        bot = _FakeBot()
+        cfg = _feedback()
+        _run(start_flow_at(bot, cfg, chat_id=100, user_id=7, index=0, language_code="fa"))
+        assert bot.sent[0]["text"] == "How would you rate us? ⭐"
+        labels = [b.text for row in bot.sent[0]["reply_markup"].inline_keyboard for b in row]
+        assert labels[0] == "😍 Excellent"
+
+
+class TestRenderStep:
+    def test_localized_steps_renders_every_step_and_keeps_values(self) -> None:
+        steps = localized_steps(_translated_feedback(), "fa")
+        assert [s.id for s in steps] == ["rating", "comment"]
+        assert steps[0].prompt == "به ما چه امتیازی می‌دهید؟ ⭐"
+        assert steps[0].options[0].label == "😍 عالی"
+        assert steps[0].options[0].value == "excellent"  # value never translated
+        assert steps[1].prompt == "ممنون! چیزی برای اضافه کردن دارید؟ 💬"
+        assert steps[1].answer_type == "free_text"
+
+    def test_rendering_leaves_the_base_steps_untouched(self) -> None:
+        """No per-step copy → the parsed steps are returned unchanged (identity)."""
+        base = parse_steps(_feedback())
+        assert localized_steps(_feedback(), "fa") == base
+        assert localized_steps(_feedback(), None) == base
+
+    def test_render_step_without_copy_is_a_no_op(self) -> None:
+        step = FlowStep(id="a", prompt="p", options=[StepOption(label="L", value="v")])
+        copy = localize(_feedback(), "de")
+        assert render_step(step, copy) is step
 
 
 # --------------------------------------------------------------------------- #

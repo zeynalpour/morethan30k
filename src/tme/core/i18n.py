@@ -3,14 +3,21 @@
 A tenant bot's base flow is written in ONE language (its default). The owner
 may add per-language overrides under ``config.translations``; this module
 resolves the *effective copy* for a single user with the fallback chain
-documented in ROADMAP Phase 1: **user language → English → bot default**,
+documented in ROADMAP Phase 1: **user language → main language → bot default**,
 applied per field (a translation that only overrides the welcome message keeps
 the base menu and fallback text).
+
+The middle layer is English by default and becomes ``config.main_language``
+when the owner declares one (issue #23 — a Persian bot's base copy is Persian,
+so falling back to English is wrong). Step prompts and option labels ride the
+same chain through :meth:`LocalizedCopy.step_prompt` /
+:meth:`LocalizedCopy.step_options`, so the shared steps engine renders
+localized copy without any per-template code.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tme.schemas.bot_config import (
     BotConfigBase,
@@ -18,6 +25,7 @@ from tme.schemas.bot_config import (
     EchoBotConfig,
     HelloBotConfig,
     MenuButton,
+    StepTranslation,
     Translation,
 )
 
@@ -29,6 +37,19 @@ _DEFAULT_GREETING: str = HelloBotConfig.model_fields["greeting"].default
 
 
 @dataclass
+class StepCopy:
+    """Resolved per-step overrides for one step id (issue #23).
+
+    ``options`` maps an option *index* to its localized label, so a
+    translation may localize any subset of a step's options and the rest
+    fall through to the flow's own labels.
+    """
+
+    prompt: str | None = None
+    options: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
 class LocalizedCopy:
     """The effective user-facing copy for one user, resolved per field."""
 
@@ -37,6 +58,25 @@ class LocalizedCopy:
     greeting: str
     echo_prefix: str
     menu_buttons: list[MenuButton]
+    steps: dict[str, StepCopy] = field(default_factory=dict)
+
+    def step_prompt(self, step_id: str, default: str) -> str:
+        """Localized prompt for ``step_id`` — ``default`` when unset/blank."""
+        entry = self.steps.get(step_id)
+        if entry is None:
+            return default
+        return _non_empty(entry.prompt) or default
+
+    def step_options(self, step_id: str, defaults: list[str]) -> list[str]:
+        """Localized option labels for ``step_id``, falling back per index.
+
+        Labels are matched positionally: a translation shorter than the base
+        option list leaves the trailing labels untouched.
+        """
+        entry = self.steps.get(step_id)
+        if entry is None or not entry.options:
+            return list(defaults)
+        return [entry.options.get(index) or label for index, label in enumerate(defaults)]
 
 
 def normalize_language(language_code: str | None) -> str:
@@ -97,10 +137,12 @@ def localize(config: BotConfigUnion, language_code: str | None) -> LocalizedCopy
 
     # Single-language bots speak ONLY their base copy — no translation layers.
     if not config.single_language:
-        # English first, then the user's own language — later layers win.
-        layers = ["en"]
+        # Middle layer first — English, or the owner's main_language (#23) —
+        # then the user's own language; later layers win.
+        middle = normalize_language(config.main_language) or "en"
+        layers = [middle]
         user_lang = normalize_language(language_code)
-        if user_lang and user_lang != "en":
+        if user_lang and user_lang != middle:
             layers.append(user_lang)
 
         for code in layers:
@@ -130,3 +172,17 @@ def _overlay(copy: LocalizedCopy, translation: Translation) -> None:
         copy.echo_prefix = translation.echo_prefix
     if translation.menu_buttons is not None:
         copy.menu_buttons = list(translation.menu_buttons)
+    for step_id, step in (translation.steps or {}).items():
+        _overlay_step(copy, step_id, step)
+
+
+def _overlay_step(copy: LocalizedCopy, step_id: str, translation: StepTranslation) -> None:
+    """Merge one step's localized copy into the running chain (blank = unset)."""
+    entry = copy.steps.setdefault(step_id, StepCopy())
+    prompt = _non_empty(translation.prompt)
+    if prompt is not None:
+        entry.prompt = prompt
+    for index, label in enumerate(translation.options or []):
+        cleaned = _non_empty(label)
+        if cleaned is not None:
+            entry.options[index] = cleaned

@@ -24,13 +24,42 @@ export interface MenuButtonData {
 }
 
 // Per-language copy overrides (Phase 1 i18n). Every field optional — the
-// backend falls back per field: user language → English → base flow.
+// backend falls back per field: user language → main language → base flow.
+export interface StepTranslation {
+  prompt?: string;
+  // Localized option LABELS, positionally aligned with the step's options
+  // (the option `value` is never translated — it is the answer key).
+  options?: string[];
+}
+
 export interface Translation {
   welcome_message?: string;
   fallback_message?: string;
   greeting?: string;
   echo_prefix?: string;
   menu_buttons?: MenuButtonData[];
+  // Issue #23 — per-step copy, keyed by the step's `id` in the flow's
+  // `steps` array.
+  steps?: Record<string, StepTranslation>;
+}
+
+// One option of a flow step. `value` is the answer key (what a quiz scores
+// against) and is never translated; `label` is the user-visible button text.
+export interface StepOptionData {
+  label: string;
+  value: string;
+}
+
+// A step of a multi-step `steps` flow (the S2.2 primitive, issue #23). Lives
+// as an `extra="allow"` rider in the flow — no schema column, no migration.
+export interface FlowStepData {
+  id: string;
+  prompt: string;
+  options?: StepOptionData[];
+  // "auto" (choice when options exist, else free text) | "free_text" | "none"
+  // ("none" = informational / terminal result step).
+  answer_type?: string;
+  correct_answers?: string[];
 }
 
 export interface BotConfigFlow {
@@ -44,6 +73,10 @@ export interface BotConfigFlow {
   echo_prefix?: string;
   translations?: Record<string, Translation>;
   single_language?: boolean;
+  // Issue #23 — the language the bot's base copy is written in (ISO-639-1).
+  // null/absent = English middle layer (the historical behaviour).
+  main_language?: string | null;
+  steps?: FlowStepData[];
   template?: { id: string; version: number };
 }
 

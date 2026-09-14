@@ -1,5 +1,15 @@
 import { useState, useCallback } from "react";
-import type { BotRow, BotConfigRow, BotConfigFlow, MenuButtonData, Translation } from "../lib/api";
+import type {
+  BotRow,
+  BotConfigRow,
+  BotConfigFlow,
+  FlowStepData,
+  MenuButtonData,
+  StepTranslation,
+  Translation,
+} from "../lib/api";
+import { LANGUAGE_OPTIONS, languageLabel } from "../lib/languages";
+import { FlowStepsEditor, StepTranslationsEditor } from "./FlowStepsEditor";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
 import { TemplatePanel } from "./TemplatePanel";
 
@@ -11,6 +21,66 @@ interface ConfigEditorProps {
   onShowBots: () => void;
   onRecloned: () => void;
   onPanelError: (msg: string) => void;
+}
+
+// Blank = "unset" (the same rule the backend applies to copy): a cleared step
+// prompt keeps the step's existing question rather than storing "" — the
+// steps engine drops a step whose prompt is empty, which would silently
+// delete the question for every user. Optional keys that carry no data are
+// dropped instead of written back as []/"auto", so saving an untouched step
+// never rewrites the flow the template shipped.
+function cleanSteps(steps: FlowStepData[], original: FlowStepData[]): FlowStepData[] {
+  const previous = new Map(original.map((step) => [step.id, step]));
+  return steps
+    .map((step) => {
+      const before = previous.get(step.id);
+      const prompt = (step.prompt || "").trim() || (before?.prompt || "").trim();
+      // An option needs both halves: the label the user taps and the value
+      // that is stored/scored. Either one alone completes the other instead
+      // of saving an option the engine would reject.
+      const options = (step.options || [])
+        .map((opt) => ({
+          label: (opt.label || "").trim() || (opt.value || "").trim(),
+          value: (opt.value || "").trim() || (opt.label || "").trim(),
+        }))
+        .filter((opt) => opt.label && opt.value);
+      const correct = (step.correct_answers || []).map((value) => value.trim()).filter(Boolean);
+      const answerType = step.answer_type || "auto";
+
+      const cleaned: FlowStepData = { ...step, prompt };
+      if (options.length > 0) cleaned.options = options;
+      else delete cleaned.options;
+      if (correct.length > 0) cleaned.correct_answers = correct;
+      else delete cleaned.correct_answers;
+      if (answerType !== "auto" || before?.answer_type) cleaned.answer_type = answerType;
+      else delete cleaned.answer_type;
+      return cleaned;
+    })
+    .filter((step) => step.prompt);
+}
+
+// Per-language step copy. Blank prompts/values are dropped (never sent), and
+// option labels keep their POSITION: a label is matched to the step's option
+// at the same index, so interior blanks stay as placeholders while trailing
+// blanks are trimmed.
+function cleanStepTranslations(
+  copy: Record<string, StepTranslation> | undefined
+): Record<string, StepTranslation> {
+  const cleaned: Record<string, StepTranslation> = {};
+  if (!copy) return cleaned;
+
+  for (const [stepId, entry] of Object.entries(copy)) {
+    const next: StepTranslation = {};
+    const prompt = (entry.prompt || "").trim();
+    if (prompt) next.prompt = prompt;
+
+    const labels = (entry.options || []).map((label) => (label || "").trim());
+    while (labels.length > 0 && labels[labels.length - 1] === "") labels.pop();
+    if (labels.length > 0) next.options = labels;
+
+    if (Object.keys(next).length > 0) cleaned[stepId] = next;
+  }
+  return cleaned;
 }
 
 export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, onRecloned, onPanelError }: ConfigEditorProps) {
@@ -30,6 +100,10 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
   );
   const [newLang, setNewLang] = useState("");
   const [singleLanguage, setSingleLanguage] = useState(!!flow.single_language);
+  const [mainLanguage, setMainLanguage] = useState(flow.main_language || "");
+  const [steps, setSteps] = useState<FlowStepData[]>(
+    Array.isArray(flow.steps) ? flow.steps : []
+  );
   const [menuButtons, setMenuButtons] = useState<MenuButtonData[]>(
     Array.isArray(flow.menu_buttons) ? flow.menu_buttons : []
   );
@@ -37,6 +111,9 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
 
   const isHello = bot.bot_type === "hello";
   const isEcho = bot.bot_type === "echo";
+  const hasSteps = steps.length > 0;
+  // The base copy the steps engine will ship when a translation is absent.
+  const baseSteps: FlowStepData[] = Array.isArray(flow.steps) ? flow.steps : [];
 
   const addLang = useCallback(() => {
     const code = newLang.trim().toLowerCase().replace(/[^a-z]/g, "");
@@ -57,11 +134,11 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
   }, [activeLang]);
 
   const setLangField = useCallback(
-    (field: keyof Translation, value: string | MenuButtonData[]) => {
+    (patch: Partial<Translation>) => {
       if (!activeLang) return;
       setTranslations((prev) => ({
         ...prev,
-        [activeLang]: { ...(prev[activeLang] || {}), [field]: value },
+        [activeLang]: { ...(prev[activeLang] || {}), ...patch },
       }));
     },
     [activeLang]
@@ -79,9 +156,21 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       if (!merged.menu_buttons || merged.menu_buttons.length === 0) {
         merged.menu_buttons = menuButtons;
       }
+      // Steps too: prefill the language with the base prompts/labels so the
+      // owner edits the text instead of retyping every question.
+      if (!merged.steps || Object.keys(merged.steps).length === 0) {
+        const stepCopy: Record<string, StepTranslation> = {};
+        for (const step of steps) {
+          const entry: StepTranslation = {};
+          if (step.prompt?.trim()) entry.prompt = step.prompt;
+          if (step.options?.length) entry.options = step.options.map((opt) => opt.label);
+          if (Object.keys(entry).length > 0) stepCopy[step.id] = entry;
+        }
+        if (Object.keys(stepCopy).length > 0) merged.steps = stepCopy;
+      }
       return { ...prev, [activeLang]: merged };
     });
-  }, [activeLang, welcomeMessage, fallbackMessage, greeting, echoPrefix, menuButtons, isHello, isEcho]);
+  }, [activeLang, welcomeMessage, fallbackMessage, greeting, echoPrefix, menuButtons, steps, isHello, isEcho]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -90,10 +179,13 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
     for (const [lang, tr] of Object.entries(translations)) {
       const cleaned: Translation = {};
       for (const [field, value] of Object.entries(tr)) {
+        if (field === "steps") continue; // nested copy, cleaned below
         if (Array.isArray(value) ? value.length > 0 : value !== undefined && value !== "") {
-          cleaned[field as keyof Translation] = value;
+          (cleaned as Record<string, unknown>)[field] = value;
         }
       }
+      const stepCopy = cleanStepTranslations(tr.steps);
+      if (Object.keys(stepCopy).length > 0) cleaned.steps = stepCopy;
       if (Object.keys(cleaned).length > 0) cleanedTranslations[lang] = cleaned;
     }
 
@@ -121,9 +213,19 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       else delete newFlow.greeting;
     }
     if (isEcho) newFlow.echo_prefix = echoPrefix;
+    // Main language drives the middle layer of the fallback chain. Blank =
+    // "unset" (English middle layer) — the key is removed, never written "".
+    const main = mainLanguage.trim().toLowerCase();
+    if (/^[a-z]{2}$/.test(main)) newFlow.main_language = main;
+    else delete newFlow.main_language;
+    // Only touch `steps` for a flow that has them: writing [] into a plain
+    // welcome/menu bot would add a rider the owner never asked for.
+    if (Array.isArray(flow.steps) || steps.length > 0) {
+      newFlow.steps = cleanSteps(steps, baseSteps);
+    }
     onSave(newFlow);
     setSaving(false);
-  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, singleLanguage, greeting, echoPrefix, isHello, isEcho, onSave]);
+  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, singleLanguage, greeting, echoPrefix, mainLanguage, steps, baseSteps, isHello, isEcho, onSave]);
 
   return (
     <div className="px-4 py-4 space-y-5">
@@ -194,9 +296,41 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
         />
       </Section>
 
+      {hasSteps && (
+        <Section
+          title={`Flow Steps (${steps.length})`}
+          subtitle="Every step of this bot's multi-step flow — prompt, options, answer type and correct answers. Each step is translatable per language below."
+        >
+          <FlowStepsEditor steps={steps} onChange={setSteps} />
+        </Section>
+      )}
+
+      <Section
+        title="Main Language"
+        subtitle="The language your bot's base copy is written in. It sets the middle layer of the fallback chain — user language → main language → base copy — so a user without a translation gets your base copy's language instead of English."
+      >
+        <select value={mainLanguage} onChange={(e) => setMainLanguage(e.target.value)}>
+          <option value="">— none (English middle layer) —</option>
+          {LANGUAGE_OPTIONS.map((lang) => (
+            <option key={lang.code} value={lang.code}>
+              {lang.label}
+            </option>
+          ))}
+          {mainLanguage && !LANGUAGE_OPTIONS.some((l) => l.code === mainLanguage) && (
+            <option value={mainLanguage}>🌐 {mainLanguage}</option>
+          )}
+        </select>
+        <p className="text-xs mt-1" style={{ color: "var(--tg-hint)" }}>
+          Base copy language:{" "}
+          {mainLanguage
+            ? languageLabel(mainLanguage)
+            : "not set — English is the middle layer (fallback: user language → English → base copy)"}
+        </p>
+      </Section>
+
       <Section
         title="Translations"
-        subtitle="Users see the bot in their Telegram language — per field: user language → English → base"
+        subtitle="Users see the bot in their Telegram language — per field: user language → main language → base"
       >
         <label
           className="flex items-center gap-2 text-sm mb-3"
@@ -270,7 +404,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
               <textarea
                 rows={2}
                 value={translations[activeLang]?.welcome_message || ""}
-                onChange={(e) => setLangField("welcome_message", e.target.value)}
+                onChange={(e) => setLangField({ welcome_message: e.target.value })}
                 placeholder={welcomeMessage}
               />
             </label>
@@ -283,7 +417,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
                 <textarea
                   rows={2}
                   value={translations[activeLang]?.greeting || ""}
-                  onChange={(e) => setLangField("greeting", e.target.value)}
+                  onChange={(e) => setLangField({ greeting: e.target.value })}
                   placeholder={greeting}
                 />
               </label>
@@ -297,7 +431,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
                 <input
                   type="text"
                   value={translations[activeLang]?.echo_prefix || ""}
-                  onChange={(e) => setLangField("echo_prefix", e.target.value)}
+                  onChange={(e) => setLangField({ echo_prefix: e.target.value })}
                   placeholder={echoPrefix}
                 />
               </label>
@@ -310,7 +444,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
               <textarea
                 rows={2}
                 value={translations[activeLang]?.fallback_message || ""}
-                onChange={(e) => setLangField("fallback_message", e.target.value)}
+                onChange={(e) => setLangField({ fallback_message: e.target.value })}
                 placeholder={fallbackMessage}
               />
             </label>
@@ -321,9 +455,22 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
               </span>
               <MenuButtonsEditor
                 buttons={translations[activeLang]?.menu_buttons || []}
-                onChange={(b) => setLangField("menu_buttons", b)}
+                onChange={(b) => setLangField({ menu_buttons: b })}
               />
             </div>
+
+            {hasSteps && (
+              <div>
+                <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                  Step copy — every question and option label in {activeLang}
+                </span>
+                <StepTranslationsEditor
+                  steps={steps}
+                  value={translations[activeLang]?.steps || {}}
+                  onChange={(stepCopy) => setLangField({ steps: stepCopy })}
+                />
+              </div>
+            )}
 
             <button className="btn-secondary w-full" onClick={copyFromBase}>
               📋 Copy from base
