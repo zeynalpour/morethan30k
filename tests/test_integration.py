@@ -764,3 +764,34 @@ def test_backfill_repairs_hashes_from_the_vault_after_clearing(test_stack, monke
     live = test_stack(cache_module.get_bot_config(raw))
     assert live is not None
     assert live.welcome_message == "HASH-ROUTED"
+
+
+# --------------------------------------------------------------------------- #
+# S0.3 follow-up — provisioning after activation is a VAULT-ONLY write
+# --------------------------------------------------------------------------- #
+
+
+def test_provisioning_with_the_key_writes_the_vault_only(test_stack, monkeypatch) -> None:
+    """A bot created while the master key is set has NO plaintext token.
+
+    Runs after the rollout tests on purpose: by then every other row's
+    ``bots.token`` is already NULL, and this proves the NEXT bot the owner
+    creates lands in the same state instead of re-introducing a plaintext copy
+    the backfill would have to clear again. The vault row and the routing hash
+    are the only token artefacts, so hash-first resolution and the accessor keep
+    working end to end.
+    """
+    _use_vault_key(monkeypatch)
+    monkeypatch.setattr("tme.services.managed_bots.register_webhook", AsyncMock(return_value=False))
+    raw = "910000010:VAULT-ONLY-TOKEN"
+
+    bot_row = test_stack(provision_managed_bot(token=raw, owner_telegram_id=OWNER_TG_ID))
+
+    plaintext, hash_ = test_stack(_bot_state(bot_row.id))
+    assert plaintext is None  # vault-only: the column was never written
+    assert hash_ == token_hash(raw)  # the routing key is always set
+
+    assert test_stack(_vaulted_value(bot_row.id)) == raw
+    assert test_stack(_resolve_token(bot_row.id)) == raw  # the accessor finds it
+    assert test_stack(cache_module.get_bot_config(raw)) is not None  # and it serves
+    assert test_stack(_plaintext_count()) == 0  # nothing unencrypted anywhere

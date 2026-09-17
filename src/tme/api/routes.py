@@ -20,6 +20,7 @@ from tme.core.cache import invalidate_bot_config, invalidate_bot_config_hash
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotType, User
+from tme.modules import is_active, list_modules, normalize_flow
 from tme.schemas.bot_config import BotConfigUnion
 from tme.services.auth import validate_telegram_init_data
 from tme.services.bot_health import (
@@ -62,6 +63,23 @@ class BotSummary(BaseModel):
     #: ``active`` (serving), ``paused`` (owner switched it off), or
     #: ``archived`` (killed in BotFather — token revoked, detected by probe).
     state: str
+
+
+class ModuleSummary(BaseModel):
+    """One registry module resolved against a single bot's flow (IDEAS N step 0).
+
+    ``active`` is **derived** from the flow the engine executes (the registry's
+    detector reads the flow's own data), never from the stored
+    ``active_modules`` flag — the dashboard renders it as a read-only toggle.
+    """
+
+    id: str
+    version: int
+    display_name: str
+    description: str
+    config_keys: list[str]
+    dependencies: list[str]
+    active: bool
 
 
 class ConfigUpdate(BaseModel):
@@ -278,7 +296,10 @@ async def update_bot_config(
     """Replace the bot's flow (strictly validated), then invalidate the cache.
 
     The ``bot_type`` column is kept in sync with the flow's discriminator so
-    the DB row and the executed config can never disagree.
+    the DB row and the executed config can never disagree. ``active_modules``
+    is **derived** from the submitted flow (IDEAS N step 0): whatever a client
+    sends for that key is replaced by the registry's answer, so a bot can no
+    longer advertise a module its flow does not contain.
     """
     try:
         parsed: BotConfigUnion = TypeAdapter(BotConfigUnion).validate_python(payload.flow)
@@ -288,12 +309,21 @@ async def update_bot_config(
             detail={"error": "invalid flow", "detail": exc.errors(include_url=False)},
         ) from exc
 
+    flow = normalize_flow(parsed.model_dump())
+    if flow["active_modules"] != parsed.active_modules:
+        logger.info(
+            "Derived active_modules=%s for bot id=%s (client sent %s)",
+            flow["active_modules"],
+            bot_id,
+            parsed.active_modules,
+        )
+
     async with session_scope() as session:
         bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None or bot.config is None:
             raise HTTPException(status_code=404, detail="Bot not found")
         await _reject_if_archived(bot)
-        bot.config.flow = parsed.model_dump()
+        bot.config.flow = flow
         bot.bot_type = parsed.bot_type
         # Vault-first (S0.3): the real token is what invalidates the hash-keyed
         # cache entry, so it is resolved before the session closes.
@@ -335,8 +365,9 @@ async def update_bot(
                 # must stop advertising "update available" for a flow the
                 # template no longer describes (Architect's S2.3 gotcha —
                 # _default_config_for emits NO stamp, so this is a wipe by
-                # construction, not a conditional one).
-                bot.config.flow = _default_config_for(payload.bot_type).model_dump()
+                # construction, not a conditional one). The module flag is
+                # derived from the new flow, never carried over (IDEAS N step 0).
+                bot.config.flow = normalize_flow(_default_config_for(payload.bot_type).model_dump())
         if payload.is_active is not None:
             bot.is_active = payload.is_active
 
@@ -356,6 +387,43 @@ async def update_bot(
         summary.bot_type,
     )
     return summary
+
+
+# --------------------------------------------------------------------------- #
+# Modules (IDEAS N step 0 — the registry, derived from the bot's own flow)
+# --------------------------------------------------------------------------- #
+@router.get("/bots/{bot_id}/modules", response_model=list[ModuleSummary])
+async def list_bot_modules(bot_id: int, auth: int = Depends(_require_auth)) -> list[ModuleSummary]:
+    """Every registered module, resolved against THIS bot's flow (IDEAS N step 0).
+
+    The single source is :mod:`tme.modules` (the in-code registry) — no list is
+    duplicated in the frontend, and ``active`` is **derived** from the flow's
+    own content rather than read from the stored ``active_modules`` flag. The
+    dashboard therefore renders the truth: a bot cannot advertise a module its
+    flow does not contain. The capability itself is switched on/off by editing
+    the flow (add/remove its config — e.g. the ``steps`` array), never by
+    typing a module name.
+
+    Owner-scoped like every other ``/api`` route.
+    """
+    async with session_scope() as session:
+        bot = await _load_owned_bot(session, bot_id, auth)
+    if bot is None or bot.config is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    flow = bot.config.flow if isinstance(bot.config.flow, dict) else {}
+    return [
+        ModuleSummary(
+            id=spec.id,
+            version=spec.version,
+            display_name=spec.display_name,
+            description=spec.description,
+            config_keys=list(spec.config_keys),
+            dependencies=list(spec.dependencies),
+            active=is_active(spec.id, flow),
+        )
+        for spec in list_modules()
+    ]
 
 
 # --------------------------------------------------------------------------- #

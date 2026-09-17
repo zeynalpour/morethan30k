@@ -918,3 +918,102 @@ def test_reclone_pinned_version(monkeypatch) -> None:
     finally:
         REGISTRY.clear()
         REGISTRY.update(saved)
+
+
+# --------------------------------------------------------------------------- #
+# Modules (IDEAS N step 0) — the registry, derived from the bot's own flow
+# --------------------------------------------------------------------------- #
+def _modules_flow() -> dict:
+    """A flow that genuinely contains the ``steps`` module."""
+    return {
+        "bot_type": "generic",
+        "welcome_message": "Hi",
+        "steps": [
+            {"id": "rating", "prompt": "How was it?"},
+            {"id": "comment", "prompt": "Anything to add?", "answer_type": "free_text"},
+        ],
+    }
+
+
+def test_list_bot_modules_derives_active_from_the_flow(monkeypatch) -> None:
+    """The panel's toggle state comes from the flow, never from the flag."""
+    _install(monkeypatch, bot_row=_bot(config_flow=_modules_flow()))
+
+    resp = client.get("/api/bots/7/modules", headers=_AUTH)
+
+    assert resp.status_code == 200
+    modules = {mod["id"]: mod for mod in resp.json()}
+    assert list(modules) == ["steps"]  # exactly the registry's real modules
+    assert modules["steps"]["active"] is True
+    assert modules["steps"]["config_keys"] == ["steps"]
+    assert modules["steps"]["display_name"] and modules["steps"]["description"]
+
+
+def test_list_bot_modules_reports_off_for_a_flow_without_steps(monkeypatch) -> None:
+    """A bot that only greets cannot advertise a capability it does not hold."""
+    _install(monkeypatch, bot_row=_bot(config_flow={"bot_type": "generic"}))
+
+    resp = client.get("/api/bots/7/modules", headers=_AUTH)
+
+    assert resp.status_code == 200
+    assert [mod["id"] for mod in resp.json()] == ["steps"]
+    assert resp.json()[0]["active"] is False
+
+
+def test_list_bot_modules_ignores_a_stale_flag(monkeypatch) -> None:
+    """A hand-written/advertising flag is not what the panel reports.
+
+    The bug this whole job fixes: a flag claiming ``steps`` on a flow with no
+    steps anywhere. ``active`` follows the flow's content, not the claim.
+    """
+    _install(
+        monkeypatch,
+        bot_row=_bot(config_flow={"bot_type": "generic", "active_modules": ["steps", "ai_reply"]}),
+    )
+
+    resp = client.get("/api/bots/7/modules", headers=_AUTH)
+
+    assert resp.json()[0]["active"] is False
+
+
+def test_list_bot_modules_requires_ownership(monkeypatch) -> None:
+    _install(monkeypatch, bot_row=None)
+    assert client.get("/api/bots/7/modules", headers=_AUTH).status_code == 404
+
+
+def test_list_bot_modules_requires_auth() -> None:
+    # No stubbed auth: a missing initData header is refused outright.
+    assert client.get("/api/bots/7/modules").status_code == 401
+
+
+def test_patch_config_derives_active_modules_and_ignores_the_client(monkeypatch) -> None:
+    """What is WRITTEN is the registry's answer, never the client's list.
+
+    Covers both directions of the old lie in one round-trip: junk names and a
+    claim without the capability disappear, and a flow that really contains
+    steps gets the flag whether or not the client sent it.
+    """
+    bot = _bot()
+    invalidate = _install(monkeypatch, bot_row=bot)
+
+    first = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {**_modules_flow(), "active_modules": ["ai_reply"]}},
+        headers=_AUTH,
+    )
+
+    assert first.status_code == 200
+    assert first.json()["active_modules"] == ["steps"]  # derived from the steps
+    assert bot.config.flow["active_modules"] == ["steps"]
+
+    # A plain flow that CLAIMED the module: the claim is dropped on save.
+    second = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "active_modules": ["steps"]}},
+        headers=_AUTH,
+    )
+
+    assert second.status_code == 200
+    assert second.json()["active_modules"] == []
+    assert bot.config.flow["active_modules"] == []
+    assert invalidate.await_count == 2  # both saves still dropped the cache

@@ -152,7 +152,13 @@ class BotConfigBase(BaseModel):
     )
     active_modules: list[str] = Field(
         default_factory=list,
-        description="Feature flags / module names enabled for this bot.",
+        description=(
+            "Module names enabled for this bot — BOOKKEEPING, never a setting "
+            "(IDEAS N step 0): every write path persists the value DERIVED from "
+            "the flow's own content by ``tme.modules.normalize_flow``, so a bot "
+            "can no longer advertise a module its flow does not contain. The "
+            "engine still reads this key as its module gate."
+        ),
     )
     fallback_message: str = Field(
         default="🤖 Sorry, I didn't understand that.",

@@ -61,6 +61,16 @@ auditable:
   would put copy on the request path and in Postgres for no gain. Unknown
   step ids are stored as given and never read; blank copy is "unset" at
   every layer (never sent).
+- **Modules: `active_modules` is derived bookkeeping [NOW, IDEAS N step 0]** —
+  the in-code module registry (`src/tme/modules/`, mirroring `TemplateSpec`)
+  names every engine capability that exists and carries the detector that
+  answers "does this flow contain it?". The flow key `active_modules` stays in
+  the data (the engine reads it as its module gate) but is **never** a setting:
+  every write path persists `normalize_flow(flow)`, i.e. the value derived from
+  the flow's own content, so a bot cannot advertise a module it does not
+  contain. No table — capabilities are code, and the per-bot enable state is the
+  flow itself; `bot_modules` arrives only with the store and third-party
+  modules (IDEAS N step 3).
 
 ## ERD (target)
 
@@ -253,7 +263,14 @@ marketplace does." So today:
   with `--clear-plaintext` once every row verified a decrypt round-trip →
   **column dropped in a later release**, after dev/test/prod are all done.
   No stack is switched over by a migration: data changes are per stack and
-  verified, never applied to every stack by container start.
+  verified, never applied to every stack by container start. **Provisioning is
+  vault-only once the key is set** (S0.3 follow-up): a bot created while
+  `VAULT_MASTER_KEY` is present is persisted with `bots.token = NULL` + the
+  routing hash + its vault row, so activation is not undone by the next bot the
+  owner creates. Without the key the vault cannot operate, so provisioning keeps
+  writing the plaintext column (with its warning). Legacy plaintext is cleared
+  only by the owner's verified per-stack `--clear-plaintext` run — never
+  silently by re-provisioning.
 - **Reading the real token** (liveness probes, adapter sends, cache
   invalidation keys) goes through ONE accessor —
   `services/vault.resolve_bot_token(s)` — vault first, plaintext column as

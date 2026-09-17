@@ -11,6 +11,7 @@ import type {
 import { LANGUAGE_OPTIONS, languageLabel } from "../lib/languages";
 import { FlowStepsEditor, StepTranslationsEditor } from "./FlowStepsEditor";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
+import { ModulesPanel } from "./ModulesPanel";
 import { TemplatePanel } from "./TemplatePanel";
 
 interface ConfigEditorProps {
@@ -89,9 +90,6 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
   const [fallbackMessage, setFallbackMessage] = useState(flow.fallback_message || "");
   const [greeting, setGreeting] = useState(flow.greeting || "");
   const [echoPrefix, setEchoPrefix] = useState(flow.echo_prefix || "");
-  const [activeModules, setActiveModules] = useState(
-    Array.isArray(flow.active_modules) ? flow.active_modules.join(", ") : ""
-  );
   const [translations, setTranslations] = useState<Record<string, Translation>>(
     flow.translations || {}
   );
@@ -194,13 +192,15 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       bot_type: flow.bot_type || "generic",
       version: flow.version || 1,
       menu_buttons: menuButtons,
-      active_modules: activeModules
-        .split(",")
-        .map((m) => m.trim())
-        .filter(Boolean),
       translations: cleanedTranslations,
       single_language: singleLanguage,
     };
+    // `active_modules` is BOOKKEEPING (IDEAS N step 0) and is no longer sent:
+    // the backend derives it from the flow above via the module registry
+    // (tme.modules.normalize_flow), so the stored flag can never advertise a
+    // module this flow does not contain. Deleting the key (rather than sending
+    // a hand-picked list) makes that impossible from the client too.
+    delete newFlow.active_modules;
     // Blank copy = "unset", never an override: sending "" here would store an
     // empty message and make the bot reply with nothing (Telegram rejects
     // empty text outright). Deleting the key lets the config default apply.
@@ -225,7 +225,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
     }
     onSave(newFlow);
     setSaving(false);
-  }, [flow, welcomeMessage, fallbackMessage, menuButtons, activeModules, translations, singleLanguage, greeting, echoPrefix, mainLanguage, steps, baseSteps, isHello, isEcho, onSave]);
+  }, [flow, welcomeMessage, fallbackMessage, menuButtons, translations, singleLanguage, greeting, echoPrefix, mainLanguage, steps, baseSteps, isHello, isEcho, onSave]);
 
   return (
     <div className="px-4 py-4 space-y-5">
@@ -287,14 +287,7 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
         <MenuButtonsEditor buttons={menuButtons} onChange={setMenuButtons} />
       </Section>
 
-      <Section title="Active Modules" subtitle="Comma-separated feature flags enabled for this bot">
-        <input
-          type="text"
-          value={activeModules}
-          onChange={(e) => setActiveModules(e.target.value)}
-          placeholder="module-a, module-b"
-        />
-      </Section>
+      <ModulesPanel botId={bot.id} />
 
       {hasSteps && (
         <Section
