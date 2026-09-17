@@ -1,0 +1,251 @@
+name: Vault • backfill (manual)
+
+# Manual operator tool for the S0.3 vault rollout (issue #28): runs
+# scripts/vault_backfill.py INSIDE a stack's app container, over SSH as the
+# deploy user.
+#
+# Why this exists: Postgres in the tme-test / tme-prod stacks publishes no host
+# port (docker-compose.prod.yml), so the job can only reach the DB from inside
+# the compose network — `docker compose exec`. The stack lives under the deploy
+# user's 0700 home, which an agent on the host cannot read, so the rollout must
+# not depend on shell access to that account.
+#
+# Safety properties — deliberate, do not weaken:
+#   * workflow_dispatch ONLY. No push / pull_request / schedule trigger exists,
+#     so a merge can never start a backfill.
+#   * `mode` defaults to dry-run, which writes nothing (the path of least
+#     resistance is the harmless one).
+#   * the destructive mode (`apply-and-clear` NULLs bots.token) additionally
+#     requires the exact confirmation string CLEAR-PLAINTEXT; anything else
+#     aborts in the first step, before SSH is even configured.
+#   * every exit code comes from the script, so a verification failure fails
+#     the job instead of quietly "succeeding".
+#   * the job is scoped to ONE stack's compose project (-p) and path, so the
+#     host's other stacks are never touched.
+#   * nothing here is ever echoed as a credential: the SSH key goes straight to
+#     a 0600 file, and no secret is printed.
+#
+# Rollout order per stack (docs/architecture/04-security.md § Running the
+# backfill, per stack): dry-run → apply → prove the offline VAULT_MASTER_KEY
+# backup → apply-and-clear.
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Which stack to backfill."
+        type: choice
+        options:
+          - test
+          - prod
+        required: true
+      mode:
+        description: "dry-run writes nothing | apply hashes + vaults | apply-and-clear also NULLs bots.token (irreversible)."
+        type: choice
+        options:
+          - dry-run
+          - apply
+          - apply-and-clear
+        default: dry-run
+        required: true
+      confirm:
+        description: "Type CLEAR-PLAINTEXT to unlock mode=apply-and-clear. Ignored by the other modes."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One backfill per stack at a time: two runs against one DB would race on the
+# same rows. Different stacks may still run in parallel.
+concurrency:
+  group: vault-backfill-${{ inputs.stack }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    # The job name carries stack + mode so the run list itself says what ran.
+    name: "vault backfill • ${{ inputs.stack }} • ${{ inputs.mode }}"
+    runs-on: ubuntu-latest
+    # Environment-scoped secrets/vars decide WHICH server and stack this talks
+    # to (`test` / `production`), and `production` may additionally carry a
+    # required reviewer — the same gate deploy-prod.yml uses.
+    environment:
+      name: ${{ inputs.stack == 'prod' && 'production' || 'test' }}
+    env:
+      STACK: ${{ inputs.stack }}
+      MODE: ${{ inputs.mode }}
+      CONFIRM: ${{ inputs.confirm }}
+      # Stack-derived placement, mirroring deploy-test.yml / deploy-prod.yml
+      # defaults when the environment does not override them.
+      SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || (inputs.stack == 'prod' && 'tme-prod' || 'tme-test') }}
+      COMPOSE_PROJECT: ${{ vars.COMPOSE_PROJECT || (inputs.stack == 'prod' && 'tme-prod' || 'tme-test') }}
+    steps:
+      # No actions/checkout: this job never reads the repo — it runs the copy of
+      # the script that already ships INSIDE the app image.
+      - name: Guard — validate mode and confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$MODE" in
+            dry-run|apply|apply-and-clear) ;;
+            *) echo "::error::unknown mode '$MODE' — expected dry-run | apply | apply-and-clear."; exit 1 ;;
+          esac
+
+          # The one gate that stands between a typo and every tenant token
+          # losing its plaintext copy.
+          if [ "$MODE" = "apply-and-clear" ]; then
+            if [ "${CONFIRM:-}" != "CLEAR-PLAINTEXT" ]; then
+              echo "::error::mode=apply-and-clear NULLs bots.token for every verified bot; the vaulted copy becomes the only one. It is NOT unlocked by the mode alone — re-run with the 'confirm' input set to exactly CLEAR-PLAINTEXT, and only after the dry run reported 'failed 0' and the stack's offline VAULT_MASTER_KEY backup has been proven. Aborting; nothing was run."
+              exit 1
+            fi
+          elif [ -n "${CONFIRM:-}" ]; then
+            echo "::warning::'confirm' is set but mode=$MODE — ignoring it (only apply-and-clear uses it)."
+          fi
+
+          # Single source of truth for the flags the script is invoked with.
+          case "$MODE" in
+            dry-run)         FLAGS="" ;;
+            apply)           FLAGS="--apply" ;;
+            apply-and-clear) FLAGS="--apply --clear-plaintext" ;;
+          esac
+          echo "FLAGS=$FLAGS" >> "$GITHUB_ENV"
+          echo "mode=$MODE → script flags: ${FLAGS:-(none — dry run, writes nothing)}"
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::SSH_HOST / SSH_USER / SSH_PRIVATE_KEY are empty for the GitHub Environment this stack maps to. Add them as environment secrets (Settings → Environments → <env> → Secrets) — same ones the deploy workflows use."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "${KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::KNOWN_HOSTS not set — using ssh-keyscan (trust-on-first-use). Set a KNOWN_HOSTS secret to harden this."
+            ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+          echo "SSH configured for ${SSH_USER}@<host:${SSH_PORT}> — key written to ~/.ssh/id_deploy (0600), never printed"
+
+      - name: Preflight — stack up and job present in the image
+        shell: bash
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            DEPLOY_PATH="$DEPLOY_PATH" COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+            'bash -euo pipefail -s' <<'REMOTE'
+          cd "$DEPLOY_PATH"
+
+          if [ ! -f .env ]; then
+            echo "::error::$DEPLOY_PATH/.env is missing on the server — deploy the stack first (.github/workflows/deploy-test.yml), so the vault keys are in place."
+            exit 1
+          fi
+
+          # -f docker-compose.prod.yml is mandatory: the deploy path also holds
+          # the infra-only docker-compose.yml (tme-postgres / tme-redis), which
+          # has no app service.
+          running="$(docker compose -p "$COMPOSE_PROJECT" --env-file .env -f docker-compose.prod.yml ps --status running --services)"
+          if ! printf '%s\n' "$running" | grep -qx app; then
+            echo "::error::the 'app' container of compose project '$COMPOSE_PROJECT' is not running in $DEPLOY_PATH (running services: $(printf '%s' "$running" | tr '\n' ' ')). Start the stack, then retry."
+            exit 1
+          fi
+
+          if ! docker compose -p "$COMPOSE_PROJECT" --env-file .env -f docker-compose.prod.yml \
+              exec -T app test -f scripts/vault_backfill.py; then
+            echo "::error::scripts/vault_backfill.py is not in the running image. Rebuild/relaunch the stack so the Dockerfile's 'COPY scripts ./scripts' takes effect, or use the one-off bind-mount form in docs/architecture/04-security.md."
+            exit 1
+          fi
+
+          echo "preflight OK — app container running in $DEPLOY_PATH ($COMPOSE_PROJECT) and scripts/vault_backfill.py is present in the image"
+          REMOTE
+
+      - name: Run vault backfill
+        id: backfill
+        shell: bash
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          echo "::notice::vault backfill • stack=$STACK • environment scoped • compose project=$COMPOSE_PROJECT • mode=$MODE • flags=${FLAGS:-(none)}"
+
+          # Flags travel base64-encoded: ssh joins its argv with spaces and the
+          # remote shell re-parses it, so a literal "--apply --clear-plaintext"
+          # argument would split and be executed as a command.
+          FLAGS_B64="$(printf '%s' "${FLAGS:-}" | base64 -w0)"
+
+          set +e
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            DEPLOY_PATH="$DEPLOY_PATH" COMPOSE_PROJECT="$COMPOSE_PROJECT" FLAGS_B64="$FLAGS_B64" MODE="$MODE" \
+            'bash -euo pipefail -s' <<'REMOTE' 2>&1 | tee /tmp/vault-backfill.log
+          cd "$DEPLOY_PATH"
+          FLAGS="$(printf '%s' "$FLAGS_B64" | base64 -d)"
+          echo "vault backfill — project=$COMPOSE_PROJECT path=$DEPLOY_PATH mode=$MODE flags=${FLAGS:-<none>}"
+          # exec -T: no TTY, so the script's output and exit code come straight back.
+          # The container's PATH already has the venv, so plain `python` works.
+          docker compose -p "$COMPOSE_PROJECT" --env-file .env -f docker-compose.prod.yml \
+            exec -T app python scripts/vault_backfill.py $FLAGS
+          REMOTE
+          status=${PIPESTATUS[0]}
+          set -e
+
+          echo "exit_code=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Job summary — stack, mode, result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGS_DISPLAY="${FLAGS:-(none — dry run, writes nothing)}"
+          case "$MODE" in
+            dry-run)         MEANING="No writes. This run only reported what \`apply\` would do — rerun with mode=apply to persist." ;;
+            apply)           MEANING="Hashes + vault rows written (and stale token_hash repaired). \`bots.token\` is untouched, so the stack is still fully reversible." ;;
+            apply-and-clear) MEANING="⚠️ \`bots.token\` was NULLed for every verified bot. The vault is now the ONLY copy — a lost VAULT_MASTER_KEY is unrecoverable. Re-run the dry run against the OFFLINE key copy to prove the backup." ;;
+            *)               MEANING="Unknown mode — the guard step refused this run." ;;
+          esac
+
+          {
+            echo "## Vault backfill — stack \`$STACK\` / mode \`$MODE\`"
+            echo
+            if [ "$STACK" = "prod" ]; then
+              echo "**Production stack.**"
+              echo
+            fi
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| stack | \`$STACK\` |"
+            echo "| environment | \`${{ inputs.stack == 'prod' && 'production' || 'test' }}\` |"
+            echo "| compose project | \`$COMPOSE_PROJECT\` |"
+            echo "| deploy path | \`$DEPLOY_PATH\` |"
+            echo "| mode | \`$MODE\` |"
+            echo "| script flags | \`$FLAGS_DISPLAY\` |"
+            echo "| exit code | \`${exit_code:-not reached}\` |"
+            echo
+            echo "$MEANING"
+            echo
+            echo "<details><summary>vault_backfill.py output</summary>"
+            echo
+            echo '```'
+            cat /tmp/vault-backfill.log 2>/dev/null || echo "(no output captured)"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
