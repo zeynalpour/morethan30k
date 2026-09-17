@@ -5,12 +5,20 @@ of the migrations so a container start can never touch every stack at once.
 
 What it does, per bot, in this order:
 
-1. sets ``bots.token_hash`` if it is missing (or does not match the token);
+1. sets ``bots.token_hash`` if it is missing (or does not match the token —
+   the hash is derived data, so it is safe to recompute; per row this is
+   also what a ``VAULT_PEPPER`` rotation needs);
 2. vaults the token if no vault row exists for the bot;
 3. **verifies** the vaulted copy by decrypting it and comparing to the
    plaintext — a mismatch aborts the run before anything is cleared;
 4. only with ``--clear-plaintext`` (and only after every row verified):
    sets ``bots.token`` to NULL.
+
+For a row whose plaintext is already NULL (a previous run, or a pepper
+rotation afterwards) there is nothing to compare against, so the vaulted
+token becomes the reference: the hash is re-derived from it and repaired if
+it no longer matches. A row with neither a plaintext nor a vault copy aborts
+the run — it cannot be repaired.
 
 Rollout order per stack: set ``VAULT_MASTER_KEY`` + ``VAULT_PEPPER``, run the
 dry run, run ``--apply``, confirm, then ``--apply --clear-plaintext``. The
@@ -102,15 +110,27 @@ async def _process_bot(
     expected = token_hash(plaintext) if plaintext is not None else None
 
     if plaintext is None:
-        # Already cleared by an earlier run — consistent only with a vault row.
-        if await has_bot_token(session, bot_id=bot.id):
-            summary.verified += 1
-            return None
-        summary.failed += 1
-        raise VaultBackfillError(
-            f"bot id={bot.id} has no plaintext token and no vaulted copy — "
-            "irrecoverable without a backup; restore this stack before continuing"
-        )
+        # Already cleared by an earlier run: the vault is the ONLY copy, so the
+        # hash can only be checked/repaired FROM it. This is the path a
+        # post-backfill VAULT_PEPPER rotation lands on.
+        vaulted = await load_bot_token(session, bot_id=bot.id)
+        if vaulted is None:
+            summary.failed += 1
+            raise VaultBackfillError(
+                f"bot id={bot.id} has no plaintext token and no vaulted copy — "
+                "irrecoverable without a backup; restore this stack before continuing"
+            )
+        if bot.token_hash != token_hash(vaulted):
+            logger.warning(
+                "bots.token_hash stale for bot id=%s (plaintext already cleared) — "
+                "repairing it from the vaulted token",
+                bot.id,
+            )
+            if apply:
+                bot.token_hash = token_hash(vaulted)
+            summary.hash_set += 1
+        summary.verified += 1
+        return None
 
     if bot.token_hash != expected:
         logger.warning(

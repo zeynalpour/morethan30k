@@ -733,3 +733,34 @@ def test_backfill_clear_plaintext_rollout_then_hash_routing_only(test_stack, mon
     resolved = test_stack(_resolve_token(cleared_id))
     assert resolved is not None
     assert resolved == test_stack(_vaulted_value(cleared_id))
+
+
+def test_backfill_repairs_hashes_from_the_vault_after_clearing(test_stack, monkeypatch) -> None:
+    """A pepper rotation after ``--clear-plaintext`` is repaired from the vault.
+
+    With the plaintext column already NULL the vaulted token is the only
+    source of truth, so the hash has to be re-derived by decrypting it — which
+    is exactly what a post-rollout ``VAULT_PEPPER`` rotation needs. Runs last:
+    it re-derives every hash in the test database under a rotated pepper.
+    """
+    _use_vault_key(monkeypatch)
+    raw = "910000009:ROTATED-PEPPER-TOKEN"
+    stale_hash = token_hash(raw)  # the pre-rotation hash
+    bot_id = test_stack(
+        _add_bot(token=None, token_hash_value=stale_hash, telegram_bot_id=910000009)
+    )
+    test_stack(_store_token(bot_id, raw))  # vaulted; plaintext already NULL
+
+    monkeypatch.setattr(settings, "vault_pepper", SecretStr("rotated-pepper-after-clear"))
+    assert test_stack(_bot_state(bot_id)) == (None, stale_hash)  # stale + no fallback
+
+    summary = test_stack(backfill.run_backfill(apply=True))
+
+    assert summary.failed == 0
+    assert summary.hash_set >= 1  # re-derived from the vault, not the column
+    assert summary.cleared == 0  # still only ever with the flag
+    assert test_stack(_bot_state(bot_id)) == (None, token_hash(raw))
+
+    live = test_stack(cache_module.get_bot_config(raw))
+    assert live is not None
+    assert live.welcome_message == "HASH-ROUTED"
