@@ -296,6 +296,7 @@ explicitly rather than left implicit.
 | P5 workflow engine | `jobs` (worker spine), `chat_variables`, `faq_entries` | design ready |
 | P6 ops/hardening | `blocked_users`, `incident_reports`, `webhook_deliveries` | design ready |
 | P7 ecosystem | `templates`/`template_versions`/`template_reviews` (marketplace), `referrals`, `bot_members`, `daily_bot_stats`, `chat_events` | design ready — **do not create before the phase** |
+| P7+ store (IDEAS N) | in-code module registry until sharing exists, then `modules` + `module_versions` (manifest JSONB) + `bot_modules` (per-bot enable/config) + `module_installs`; purchases/credit_ledger reused | design ready - a module is a declarative manifest, NEVER third-party code in-process |
 | P8 dashboard vision | reads P3's history; `publish_checklist` column on `bot_configs` | design ready |
 
 ## Migration sequence (declared ahead of time)

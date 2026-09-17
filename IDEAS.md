@@ -255,6 +255,84 @@ each other — roughly in this order (effort: S/M/L):
   Chat is the authoring surface; the Mini App is the "real" UI for
   storefront/quiz-style bots. Merged here from killed B6b. 🧭
 
+## N. Modules, skills, templates — the store (owner's direction, Sep 2026)
+
+The owner's framing: instead of one flat "modules" text field, bots get a
+**module list** they can enable — AI, RAG, text-to/translate, forward text, and
+whatever else — and in time **users can publish templates, skills and modules
+into a public store, free or paid**. This section exists so the idea has a
+named shape before anyone builds it.
+
+**Three distinct things, do not conflate them**
+
+- **Template** — a whole seed flow (`TemplateSpec`, in-code registry today).
+  "Make me a quiz bot."
+- **Module** — an engine *capability* the bot switches on, with its own config
+  keys: `ai_reply`, `rag_answer`, `translate`, `forward_to_owner`, `broadcast`,
+  `faq`, `csat`. Enabled per bot, versioned, with declared dependencies.
+- **Skill** — packaged behaviour that is not a whole flow: a prompt pack, a FAQ
+  set, a node group, a canned multi-step sequence. Attaches to a bot alongside
+  its flow.
+
+**The boundary that decides viability: declarative, never in-process code.**
+A third-party module cannot be Python shipped into the engine — that is
+per-bot code by another name and a multi-tenant security hole (one bad module
+reads every tenant's data). The safe extension surface is: (1) declarative
+config the shared engine already understands, and (2) **outbound calls** —
+webhook, MCP server, or AI provider — where the third party runs *their* code
+on *their* infrastructure. A module is therefore a manifest + config schema +
+an engine capability, never a code drop. The store sells manifests and data,
+not executables.
+
+**Tables (vault rule: name the storage)**
+
+- `modules` (published modules) — slug, owner_id (author), kind
+  (`module|skill`), category, blurb, icon, is_public, price_credits,
+  install_count, rating_sum, rating_count. Built-ins stay **in an in-code
+  registry** (same pattern as templates) and are seeded here when the store
+  opens; no table is needed until sharing exists.
+- `module_versions` — module_id, version, manifest JSONB (config schema,
+  defaults, required scopes, declared dependencies, price), changelog,
+  is_reviewed (F5 gate), review_state.
+- `bot_modules` — bot_id FK, module_id, version pinned, `enabled` BOOL,
+  config JSONB (the module's own settings), unique `(bot_id, module_id)`.
+  The engine reads this from the cached config path — modules are data, so
+  enabling one never needs a restart.
+- `module_installs` — append-only: who installed what, when (feeds G6 stats
+  and G3 revenue share).
+- Purchases reuse the existing money path: `purchases` + `credit_ledger`
+  (integer minor units, append-only). No second billing mechanism.
+
+**Immediate step (this is the fix the owner flagged in the dashboard)**
+
+Today `active_modules` is a free-text list with a schema default of `["steps"]`,
+so a bot advertises a module its flow does not contain. Step 0 of this section
+is therefore small and already agreed: a **module registry** (id, version,
+config keys, dependencies) plus a per-bot enable/disable UI that **derives** the
+flag from the bot's actual flow — the flag becomes bookkeeping, not a setting.
+
+**Sequencing (rides the existing roadmap, does not replace it)**
+
+1. Module registry + 2–3 real modules with config UI: `ai_reply` (Phase 4's
+   gateway), `forward_to_owner` (exists inside the steps engine today),
+   `translate` (text→text, cheap and demo-visible).
+2. RAG: needs a vector store — an infra decision (`pgvector` extension,
+   `documents` + `chunks` tables with embeddings) plus ingestion and cost
+   control. Bigger than it looks; do not bundle it with the registry.
+3. Publishing/sharing: `modules` + `module_versions` + the F5 review gate
+   (no store item goes live without schema validation, a dry run, and an
+   outbound allowlist check).
+4. The store itself: browse, install, rate, pay (`purchases`/`credit_ledger`),
+   and revenue share (G3) — Phase 7 territory.
+
+**Keystones this section depends on:** C1/C1b (node graph, so a module is node
+types rather than new engine branches), D1–D3 (the AI gateway is the first
+module worth selling), B7/B8 (registry + marketplace spine), F5 (review gate),
+metering (G1/G2). If any of those are missing, a store is a shop with nothing
+on the shelves.
+
+
+
 ## J. Dependency map
 
 Keystones — unlock the most downstream ideas:
@@ -423,4 +501,11 @@ North-star metric: **time-to-live-bot ≤ 60s** for the simplest path.
 - **v12 (iteration 11)** — + F6 managed-bot lifecycle (revoke-on-delete:
   the Bot API can kill a managed bot but can never delete it — only the
   owner can, via @BotFather's /deletebot).
+- **v13 (iteration 12)** — + N "Modules, skills, templates — the store"
+  (owner's direction): modules as declarative engine capabilities with
+  manifests, a module registry as step 0 of the flat `active_modules`
+  field's replacement, skills vs templates kept distinct, the
+  declarative-not-code store boundary, and the tables named
+  (`modules`, `module_versions`, `bot_modules`, `module_installs`,
+  reusing `purchases`/`credit_ledger`).
 
