@@ -310,19 +310,21 @@ async def update_bot_config(
         ) from exc
 
     flow = normalize_flow(parsed.model_dump())
-    if flow["active_modules"] != parsed.active_modules:
-        logger.info(
-            "Derived active_modules=%s for bot id=%s (client sent %s)",
-            flow["active_modules"],
-            bot_id,
-            parsed.active_modules,
-        )
 
     async with session_scope() as session:
         bot = await _load_owned_bot(session, bot_id, auth)
         if bot is None or bot.config is None:
             raise HTTPException(status_code=404, detail="Bot not found")
         await _reject_if_archived(bot)
+        # Logged only once the write is authorised (owner-scoped, not archived):
+        # a rejected request must not look like a config change in the logs.
+        if flow["active_modules"] != parsed.active_modules:
+            logger.info(
+                "Derived active_modules=%s for bot id=%s (client sent %s)",
+                flow["active_modules"],
+                bot_id,
+                parsed.active_modules,
+            )
         bot.config.flow = flow
         bot.bot_type = parsed.bot_type
         # Vault-first (S0.3): the real token is what invalidates the hash-keyed
