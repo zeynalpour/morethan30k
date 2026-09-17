@@ -38,6 +38,8 @@ jobs:
           main_bot_token: ${{ secrets.BOT_TOKEN }}
           webhook_base_url: ${{ vars.WEBHOOK_BASE_URL }}
           webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          vault_master_key: ${{ secrets.VAULT_MASTER_KEY }}
+          vault_pepper: ${{ secrets.VAULT_PEPPER }}
           database_url: ${{ secrets.DATABASE_URL }}
           redis_url: ${{ secrets.REDIS_URL }}
           app_env: "test"

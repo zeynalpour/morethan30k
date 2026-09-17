@@ -24,6 +24,12 @@ inputs:
     required: false
     default: ""
   # --- application config (assembled into .env on the server) ---
+  vault_master_key:
+    description: "Base64 AES-256 master key for the secret vault. PER STACK - never reuse across dev/test/prod. Losing it makes every vaulted bot token unrecoverable."
+    required: true
+  vault_pepper:
+    description: "Pepper for token_hash HMACs. PER STACK. Rotating it invalidates stored hashes; the vault backfill repairs them."
+    required: true
   main_bot_token:
     description: "Controller bot token (your BOT_TOKEN secret)."
     required: true
@@ -113,6 +119,8 @@ runs:
         MAIN_BOT_TOKEN: ${{ inputs.main_bot_token }}
         WEBHOOK_BASE_URL: ${{ inputs.webhook_base_url }}
         WEBHOOK_SECRET: ${{ inputs.webhook_secret }}
+        VAULT_MASTER_KEY: ${{ inputs.vault_master_key }}
+        VAULT_PEPPER: ${{ inputs.vault_pepper }}
         DATABASE_URL: ${{ inputs.database_url }}
         REDIS_URL: ${{ inputs.redis_url }}
         APP_ENV: ${{ inputs.app_env }}
@@ -159,11 +167,20 @@ runs:
           exit 1
         fi
 
+        # The vault must be on: without it every bot token is stored in
+        # plaintext, which is the exact state S0.3 exists to end.
+        if [ -z "${VAULT_MASTER_KEY:-}" ] || [ -z "${VAULT_PEPPER:-}" ]; then
+          echo "::error::VAULT_MASTER_KEY / VAULT_PEPPER are empty for this environment. Add them as environment secrets (Settings - Environments - <env> - Secrets). Refusing to deploy a stack that would store tokens in plaintext."
+          exit 1
+        fi
+
         ENVFILE="$(cat <<EOF
         APP_ENV=$APP_ENV
         MAIN_BOT_TOKEN=$MAIN_BOT_TOKEN
         WEBHOOK_BASE_URL=$WEBHOOK_BASE_URL
         WEBHOOK_SECRET=$WEBHOOK_SECRET
+        VAULT_MASTER_KEY="$VAULT_MASTER_KEY"
+        VAULT_PEPPER="$VAULT_PEPPER"
         DATABASE_URL=$DB
         REDIS_URL=$REDIS_URL
         CONFIG_CACHE_TTL=3600
