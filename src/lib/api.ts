@@ -88,11 +88,16 @@ export interface BotConfigFlow {
 // resolved against a single bot. `active` is DERIVED by the backend from the
 // flow the engine executes; the dashboard only renders it (never sends it
 // back), so the toggle can never disagree with the bot's actual flow.
+//
+// `authoring_hint` says how the owner creates this module's data, and is
+// served in BOTH states: a module that reads off must still expose the control
+// that authors it (a derived flag may gate execution, never authorship).
 export interface ModuleSummary {
   id: string;
   version: number;
   display_name: string;
   description: string;
+  authoring_hint: string;
   config_keys: string[];
   dependencies: string[];
   active: boolean;

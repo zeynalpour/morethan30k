@@ -29,7 +29,9 @@ function isTerminal(step: FlowStepData): boolean {
 
 // New steps need a stable, language-independent id (per-step translations
 // are keyed by it). Numeric suffix, first free one.
-function nextStepId(steps: FlowStepData[]): string {
+// Exported so the Modules panel's authoring affordance (which must work while
+// the module reads "off") creates a step the same way this editor does.
+export function nextStepId(steps: FlowStepData[]): string {
   const used = new Set(steps.map((s) => s.id));
   let n = steps.length + 1;
   let id = `step${n}`;
@@ -267,8 +269,23 @@ export function FlowStepsEditor({ steps, onChange }: FlowStepsEditorProps) {
         </div>
       ))}
 
+      {/* AUTHORING-GATE RULE (IDEAS N step 0): the ➕ Add step control below is
+          rendered unconditionally. It is the control that CREATES the data the
+          `steps` module flag is derived from, so gating it on that flag — or on
+          `steps.length` — is circular and is exactly the one-way door this
+          fixes: delete the last step and there was no way back. A module's
+          derived state may gate execution, never authorship. */}
+      {steps.length === 0 && (
+        <p className="text-xs" style={{ color: "var(--tg-hint)" }}>
+          No steps yet. Add the first one below — the bot's “steps” module turns
+          on by itself as soon as the flow contains a step, so this control is
+          always available.
+        </p>
+      )}
+
       <button
         onClick={addStep}
+        data-testid="add-step"
         className="btn-secondary w-full"
         style={{ border: "1px dashed var(--tg-hint)" }}
       >
@@ -351,6 +368,15 @@ export function StepTranslationsEditor({ steps, value, onChange }: StepTranslati
           </div>
         );
       })}
+
+      {/* Authoring again: with no steps there is nothing to translate yet, and
+          saying so beats rendering nothing (the panel must never look gone).
+          Orphaned copy below stays listed and removable. */}
+      {steps.length === 0 && orphanIds.length === 0 && (
+        <p className="text-xs" style={{ color: "var(--tg-hint)" }}>
+          No steps to translate yet — add a step in the Flow Steps editor above.
+        </p>
+      )}
 
       {orphanIds.length > 0 && (
         <div className="space-y-2 pt-1">

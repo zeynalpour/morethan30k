@@ -947,6 +947,10 @@ def test_list_bot_modules_derives_active_from_the_flow(monkeypatch) -> None:
     assert modules["steps"]["active"] is True
     assert modules["steps"]["config_keys"] == ["steps"]
     assert modules["steps"]["display_name"] and modules["steps"]["description"]
+    # The registry says how the owner authors this module, and that statement is
+    # served alongside the state so the panel can offer the control (IDEAS N
+    # step 0 — authoring is never gated by the derived flag).
+    assert modules["steps"]["authoring_hint"]
 
 
 def test_list_bot_modules_reports_off_for_a_flow_without_steps(monkeypatch) -> None:
@@ -1017,3 +1021,66 @@ def test_patch_config_derives_active_modules_and_ignores_the_client(monkeypatch)
     assert second.json()["active_modules"] == []
     assert bot.config.flow["active_modules"] == []
     assert invalidate.await_count == 2  # both saves still dropped the cache
+
+
+def test_authoring_a_step_back_from_an_empty_flow_turns_the_module_on(monkeypatch) -> None:
+    """IDEAS N step 0 — a derived flag may gate execution, never AUTHORING.
+
+    The live defect this pins: the flow had zero steps, so the ``steps`` module
+    derived as OFF, and the dashboard (which conditioned the steps editor on
+    that same state) offered no way to add a step — delete the last step and
+    the owner could never author one again. The rule is that the flag is a
+    CONSEQUENCE of the data, so the write path that creates the data is never
+    gated by it. This drives the full round-trip through the dashboard's own
+    API:
+
+        zero steps → module off → PATCH a step in (what the always-rendered
+        editor does) → module on; then delete the last step again → off, and
+        the panel still says how to author it.
+    """
+    bot = _bot(config_flow={"bot_type": "generic", "steps": []})
+    _install(monkeypatch, bot_row=bot)
+
+    # The state the owner hit: no steps anywhere ⇒ the module reads off, and the
+    # panel is still told how the module is authored (the editor stays offered).
+    empty = client.get("/api/bots/7/modules", headers=_AUTH).json()
+    assert empty[0]["id"] == "steps"
+    assert empty[0]["active"] is False
+    assert empty[0]["authoring_hint"]
+
+    # The single action the never-hidden ➕ Add step control performs.
+    added = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "steps": [{"id": "step1", "prompt": "How was it?"}]}},
+        headers=_AUTH,
+    )
+
+    assert added.status_code == 200
+    assert added.json()["active_modules"] == ["steps"]  # turned ON as a consequence
+
+    on = client.get("/api/bots/7/modules", headers=_AUTH).json()
+    assert on[0]["active"] is True
+    assert on[0]["authoring_hint"]  # state-independent, never conditional
+
+    # And the door stays two-way: deleting the last step turns it off again…
+    removed = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "steps": []}},
+        headers=_AUTH,
+    )
+
+    assert removed.status_code == 200
+    assert removed.json()["active_modules"] == []
+    still_off = client.get("/api/bots/7/modules", headers=_AUTH).json()
+    assert still_off[0]["active"] is False
+    # …and re-authoring is still possible: the flag never closes the write path.
+    assert still_off[0]["authoring_hint"]
+
+    again = client.patch(
+        "/api/bots/7/config",
+        json={"flow": {"bot_type": "generic", "steps": [{"id": "step1", "prompt": "Again?"}]}},
+        headers=_AUTH,
+    )
+
+    assert again.status_code == 200
+    assert again.json()["active_modules"] == ["steps"]
