@@ -30,6 +30,16 @@ STEPS_SPEC = ModuleSpec(
         "routes option taps and free-text answers, scores quiz answers and "
         "sends the collected answers to the owner."
     ),
+    # AUTHORING-GATE RULE (IDEAS N step 0): the derived flag may gate
+    # EXECUTION, never authorship. A bot with zero steps derives `steps` as
+    # OFF — and the editor that creates a step must stay reachable in that
+    # exact state, or deleting the last step is a one-way door. The hint is
+    # what the dashboard shows beside the (read-only) off state, next to the
+    # always-available Add step control.
+    authoring_hint=(
+        "Add a step in the Flow Steps editor — the module turns on by itself "
+        "once the flow contains one. Authoring is never blocked by the state above."
+    ),
     config_keys=("steps",),
 )
 

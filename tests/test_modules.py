@@ -10,6 +10,7 @@ only real modules, each with its own detector.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 import pytest
 
 from tme.modules import (
@@ -70,6 +71,11 @@ def test_every_registered_module_is_describable_and_detectable(spec: ModuleSpec)
     """
     assert spec.version >= 1
     assert spec.display_name and spec.description
+    # AUTHORING-GATE RULE (IDEAS N step 0): a module must say where the owner
+    # authors its data, because the state that hides it is the state in which
+    # the owner needs it (flag off ⇒ no data ⇒ no authoring control ⇒ door
+    # closed forever).
+    assert spec.authoring_hint, "a module must say where/how it is authored"
     assert spec.config_keys, "a module must name the flow keys it owns"
     assert is_active(spec.id, _plain_flow()) is False
 
@@ -88,12 +94,25 @@ def test_registry_rejects_duplicates_and_unknown_dependencies() -> None:
                 version=1,
                 display_name="X",
                 description="Y",
+                authoring_hint="Nowhere — this spec only exercises dependency validation.",
                 dependencies=("nope",),
             ),
             active_when=lambda _flow: True,
         )
 
     assert [spec.id for spec in list_modules()] == before
+
+
+def test_a_module_without_an_authoring_hint_cannot_be_declared() -> None:
+    """A module that does not say how it is authored is a one-way door.
+
+    ``authoring_hint`` is mandatory on the spec (not just asserted in tests), so
+    a future module cannot ship without naming the control that creates its
+    data — the state in which the owner needs it most is the state where the
+    derived flag reads "off".
+    """
+    with pytest.raises(ValidationError):
+        ModuleSpec(id="noauthor", version=1, display_name="X", description="Y")
 
 
 def test_unknown_module_lookup_raises() -> None:

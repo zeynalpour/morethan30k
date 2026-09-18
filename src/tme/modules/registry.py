@@ -63,6 +63,13 @@ class ModuleSpec(BaseModel):
         display_name: English base name for the dashboard toggle.
         description: English one-liner: what the capability does, and which
             config it needs, so the toggle is never a bare label.
+        authoring_hint: How the owner turns this module ON — where its data is
+            authored. Mandatory, because a module whose authoring path is not
+            named is a one-way door: with its data absent the derived flag
+            reads "off", and if nothing says how to create that data the owner
+            can never get it back. The dashboard renders this beside a module
+            that reads "off" together with that module's authoring control
+            (a derived flag may gate execution, never authorship).
         config_keys: Flow keys the module owns (``steps`` for the steps
             module). These are the keys the detector looks at.
         dependencies: Other module ids this one needs. Registration order is
@@ -75,6 +82,12 @@ class ModuleSpec(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=64, description="Toggle label.")
     description: str = Field(
         ..., min_length=1, max_length=280, description="What the capability does."
+    )
+    authoring_hint: str = Field(
+        ...,
+        min_length=1,
+        max_length=280,
+        description="Where/to how the owner authors this module's data (never gated).",
     )
     config_keys: tuple[str, ...] = Field(
         default=(), description="Flow keys this module owns/reads."

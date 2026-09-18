@@ -9,7 +9,8 @@ import type {
   Translation,
 } from "../lib/api";
 import { LANGUAGE_OPTIONS, languageLabel } from "../lib/languages";
-import { FlowStepsEditor, StepTranslationsEditor } from "./FlowStepsEditor";
+import { FLOW_STEPS_ANCHOR_ID } from "../lib/ui-anchors";
+import { FlowStepsEditor, StepTranslationsEditor, nextStepId } from "./FlowStepsEditor";
 import { MenuButtonsEditor } from "./MenuButtonsEditor";
 import { ModulesPanel } from "./ModulesPanel";
 import { TemplatePanel } from "./TemplatePanel";
@@ -84,6 +85,27 @@ function cleanStepTranslations(
   return cleaned;
 }
 
+// AUTHORING-GATE RULE (IDEAS N step 0)
+//
+// A module's derived (or configured) enabled-state may gate EXECUTION — does
+// the engine run this module for this bot — and may render a READ-ONLY status.
+// It must NEVER gate AUTHORING: the controls that create or edit that module's
+// data stay reachable and functional whether the module reads "on" or "off".
+//
+// Why: for `steps` the flag is DERIVED from the flow (tme.modules.normalize_flow
+// — a flow containing steps is what makes the module active). Conditioning the
+// editor on that flag is circular and was a one-way door: delete the last step
+// and the flag goes off, so the editor and its ➕ Add step control disappeared
+// and the owner could never author a step again. Adding a step is what turns
+// the module on as a CONSEQUENCE — so the editor, and the Add step control
+// inside it, are rendered unconditionally here (never inside `active_modules`,
+// `hasSteps` or any other derived-state condition). The same rule applies to
+// every future module's config form.
+//
+// Anchor target for the "author it" affordance on a module that reads off
+// (see ModulesPanel): the authoring control lives in this section, and the id
+// is shared through ../lib/ui-anchors so neither panel imports the other.
+
 export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, onRecloned, onPanelError }: ConfigEditorProps) {
   const flow = config.flow as BotConfigFlow;
   const [welcomeMessage, setWelcomeMessage] = useState(flow.welcome_message || "");
@@ -109,7 +131,10 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
 
   const isHello = bot.bot_type === "hello";
   const isEcho = bot.bot_type === "echo";
-  const hasSteps = steps.length > 0;
+  // NOTE: there is deliberately no `hasSteps` gate on the steps editor below.
+  // The step count is derived STATE (it feeds the module flag), so it can never
+  // decide whether the authoring controls are reachable — see the
+  // AUTHORING-GATE RULE above.
   // The base copy the steps engine will ship when a translation is absent.
   const baseSteps: FlowStepData[] = Array.isArray(flow.steps) ? flow.steps : [];
 
@@ -169,6 +194,22 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
       return { ...prev, [activeLang]: merged };
     });
   }, [activeLang, welcomeMessage, fallbackMessage, greeting, echoPrefix, menuButtons, steps, isHello, isEcho]);
+
+  // The steps module's AUTHORING control, handed to ModulesPanel so the panel
+  // can offer it even while the module reads "off". Adding a step is what makes
+  // the module active — the derived flag follows the data, never the other way
+  // round (AUTHORING-GATE RULE, IDEAS N step 0). Same id generation as the
+  // editor's own ➕ Add step button.
+  const addStepFromModulesPanel = useCallback(() => {
+    setSteps((prev) => [...prev, { id: nextStepId(prev), prompt: "" }]);
+    // The control the owner actually edits lives in the Flow Steps section
+    // below the panel: bring it into view so the action is never a no-op.
+    if (typeof document !== "undefined") {
+      document
+        .getElementById(FLOW_STEPS_ANCHOR_ID)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -287,16 +328,23 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
         <MenuButtonsEditor buttons={menuButtons} onChange={setMenuButtons} />
       </Section>
 
-      <ModulesPanel botId={bot.id} />
+      <ModulesPanel botId={bot.id} onAuthorStep={addStepFromModulesPanel} />
 
-      {hasSteps && (
-        <Section
-          title={`Flow Steps (${steps.length})`}
-          subtitle="Every step of this bot's multi-step flow — prompt, options, answer type and correct answers. Each step is translatable per language below."
-        >
-          <FlowStepsEditor steps={steps} onChange={setSteps} />
-        </Section>
-      )}
+      {/* AUTHORING IS NEVER GATED (IDEAS N step 0). This section used to be
+          rendered only when the flow had at least one step, so a flow with zero
+          steps showed no editor and no ➕ Add step — and since the `steps`
+          module flag is DERIVED from the flow's steps, the module read "off" at
+          the same time: a one-way door the owner could not re-open. It now
+          renders always, with the module's on/off state shown (read-only) next
+          to it. Do not re-add a derived-state condition here or on the Add step
+          control inside FlowStepsEditor. */}
+      <Section
+        id={FLOW_STEPS_ANCHOR_ID}
+        title={steps.length > 0 ? `Flow Steps (${steps.length})` : "Flow Steps"}
+        subtitle="Every step of this bot's multi-step flow — prompt, options, answer type and correct answers. Each step is translatable per language below. Adding a step turns the 'steps' module on; the module's state never blocks this editor."
+      >
+        <FlowStepsEditor steps={steps} onChange={setSteps} />
+      </Section>
 
       <Section
         title="Main Language"
@@ -452,18 +500,20 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
               />
             </div>
 
-            {hasSteps && (
-              <div>
-                <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
-                  Step copy — every question and option label in {activeLang}
-                </span>
-                <StepTranslationsEditor
-                  steps={steps}
-                  value={translations[activeLang]?.steps || {}}
-                  onChange={(stepCopy) => setLangField({ steps: stepCopy })}
-                />
-              </div>
-            )}
+            {/* Same rule inside the translations tab: a language's step copy is
+                authoring too, so it is not hidden when the flow has no steps
+                (an override kept for a deleted step must stay reviewable —
+                StepTranslationsEditor lists those itself). */}
+            <div>
+              <span className="text-xs" style={{ color: "var(--tg-hint)" }}>
+                Step copy — every question and option label in {activeLang}
+              </span>
+              <StepTranslationsEditor
+                steps={steps}
+                value={translations[activeLang]?.steps || {}}
+                onChange={(stepCopy) => setLangField({ steps: stepCopy })}
+              />
+            </div>
 
             <button className="btn-secondary w-full" onClick={copyFromBase}>
               📋 Copy from base
@@ -511,14 +561,16 @@ export function ConfigEditor({ config, bot, onSave, onTypeChange, onShowBots, on
 function Section({
   title,
   subtitle,
+  id,
   children,
 }: {
   title: string;
   subtitle?: string;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" id={id}>
       <div>
         <h2 className="text-sm font-semibold" style={{ color: "var(--tg-text)" }}>
           {title}
