@@ -8,17 +8,26 @@ actually stuck via ``getWebhookInfo``, and never claim success otherwise.
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
+from pydantic import SecretStr
 import pytest
 
 from tme.config import settings
-from tme.database.models import Bot as BotModel, BotConfig, BotType
+from tme.database.models import Bot as BotModel, BotConfig, BotType, Secret
 from tme.schemas.bot_config import BotConfigSchema, EchoBotConfig
 import tme.services.managed_bots as svc
+from tme.services.vault import (
+    SecretKind,
+    decrypt_secret,
+    resolve_bot_token,
+    token_hash,
+)
 from tme.templates import get_template
 
 TOKEN = "123456789:FAKE_TOKEN"
@@ -507,3 +516,185 @@ def test_reclone_bot_without_config_row_creates_one(monkeypatch) -> None:
     flow = merged[0].config.flow
     assert flow["template"] == {"id": "hello_world", "version": 1}
     invalidate.assert_awaited_once_with(TOKEN)
+
+
+def test_reclone_derives_the_module_flag_from_the_applied_seed(monkeypatch) -> None:
+    """Re-cloning onto a steps template cannot leave a stale/junk module flag.
+
+    IDEAS N step 0: the flag is derived from the flow being persisted, so
+    adopting a conversational seed turns ``steps`` on and adopting a plain one
+    turns it off — no owner typing involved.
+    """
+    # A persisted flow advertising both a real module it lacks and a junk name.
+    bot = _hello_bot_row(
+        {"bot_type": "generic", "active_modules": ["steps", "ai_reply"], "welcome_message": "x"}
+    )
+    merged, _invalidate = _install_reclone(monkeypatch)
+
+    asyncio.run(svc.reclone_bot(bot, get_template("quiz")))  # a real steps seed
+
+    assert merged[0].config.flow["active_modules"] == ["steps"]
+
+    merged.clear()
+    asyncio.run(svc.reclone_bot(bot, get_template("hello_world")))
+    assert merged[0].config.flow["active_modules"] == []
+
+
+# ================================================== S0.3 vault-only writes
+#: A real 32-byte master key (AES-256 wants exactly 32 bytes) — the vault code
+#: under test is the production one, only the session is a fake.
+_MASTER_KEY = base64.b64encode(hashlib.sha256(b"tme-managed-bots-tests").digest()).decode()
+
+
+class _RowsResult:
+    """A result that can be read both ways the production code reads rows."""
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
+    def scalars(self):
+        return iter(self._rows)
+
+
+def _select_entity(statement):
+    """The ORM class a ``select(...)`` targets (``None`` for anything else)."""
+    descriptions = getattr(statement, "column_descriptions", None)
+    if not descriptions:
+        return None
+    return descriptions[0].get("entity")
+
+
+class _VaultSession:
+    """Recording session with a REAL secret store (no vault mocking).
+
+    ``execute`` answers per entity: owner/bot lookups return ``None`` (a brand
+    new row), and ``Secret`` lookups are answered from the rows this session
+    added. That lets ``store_bot_token`` run its genuine AES-GCM envelope, so a
+    test can decrypt the stored row back and prove the vault really holds the
+    token — not merely that a call was made.
+    """
+
+    def __init__(self) -> None:
+        self.added: list = []
+        self._next_id = 100
+
+    @property
+    def secrets(self) -> list:
+        return [obj for obj in self.added if isinstance(obj, Secret)]
+
+    async def execute(self, statement):
+        if _select_entity(statement) is Secret:
+            # One bot per test, so the single stored row IS the match for the
+            # (kind, ref_id) lookups store_secret/load_secret/multi-token
+            # resolution perform.
+            return _RowsResult(self.secrets)
+        return _RowsResult([])  # owner + token lookups: nothing exists yet
+
+    def add(self, obj) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = self._next_id
+                self._next_id += 1
+
+
+def _install_provisioning(monkeypatch, *, seed, bot_type=BotType.GENERIC):
+    """Fake Telegram + cache, keep the vault code real; return (session, cached)."""
+    session = _VaultSession()
+    cached: list = []
+
+    @asynccontextmanager
+    async def scope():
+        yield session
+
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(username="provisioned", full_name="Provisioned")
+
+    async def fake_set(_token, config):
+        cached.append(config)
+
+    monkeypatch.setattr(svc, "get_tenant_bot", lambda _token: bot)
+    monkeypatch.setattr(svc, "session_scope", scope)
+    monkeypatch.setattr(svc, "register_webhook", AsyncMock(return_value=True))
+    monkeypatch.setattr(svc, "set_bot_config", fake_set)
+
+    async def _run():
+        return await svc.provision_managed_bot(
+            token=TOKEN, owner_telegram_id=42, bot_type=bot_type, seed=seed
+        )
+
+    return session, cached, _run
+
+
+def test_provision_with_the_master_key_writes_the_vault_only(monkeypatch) -> None:
+    """VAULT_MASTER_KEY set → ``bots.token`` stays NULL, the vault holds it.
+
+    The S0.3 follow-up: a bot created AFTER activation must not carry a second,
+    unencrypted copy of its token. The routing hash and the vault row are the
+    only token artefacts — which is what makes hash-first resolution possible
+    without ever reading a plaintext column.
+    """
+    monkeypatch.setattr(settings, "vault_master_key", SecretStr(_MASTER_KEY))
+    session, cached, run = _install_provisioning(monkeypatch, seed=None)
+
+    bot_row = asyncio.run(run())
+
+    assert bot_row.token is None  # never written, not merely cleared later
+    assert bot_row.token_hash == token_hash(TOKEN)
+
+    secrets = session.secrets
+    assert len(secrets) == 1  # exactly one vault row, keyed to this bot
+    secret = secrets[0]
+    assert (secret.kind, secret.ref_id) == (SecretKind.BOT_TOKEN.value, str(bot_row.id))
+    assert secret.last_four == TOKEN[-4:]
+    # A REAL round-trip through the production crypto: the row decrypts back to
+    # the token, so the bot keeps working with no plaintext column at all.
+    assert decrypt_secret(secret.ciphertext, secret.wrapped_dek) == TOKEN
+
+    async def _resolve():
+        return await resolve_bot_token(session, bot_row)
+
+    assert asyncio.run(_resolve()) == TOKEN  # the one accessor still finds it
+    assert len(cached) == 1  # and the cache was primed as before
+
+
+def test_provision_without_the_master_key_keeps_todays_behaviour(monkeypatch, caplog) -> None:
+    """No key → the same plaintext write + loud warning as before this change.
+
+    The vault cannot operate without ``VAULT_MASTER_KEY``, so provisioning must
+    keep working exactly as it did (the plaintext column stays the source of
+    truth) instead of persisting a bot nobody can talk to.
+    """
+    monkeypatch.setattr(settings, "vault_master_key", None)
+    session, cached, run = _install_provisioning(monkeypatch, seed=None)
+
+    bot_row = asyncio.run(run())
+
+    assert bot_row.token == TOKEN  # plaintext written, as today
+    assert bot_row.token_hash == token_hash(TOKEN)  # hash set either way
+    assert session.secrets == []  # nothing vaulted
+    assert "VAULT_MASTER_KEY not set" in caplog.text  # the loud warning
+    assert len(cached) == 1  # still serving
+
+
+def test_provision_derives_the_module_flag_for_both_flow_kinds(monkeypatch) -> None:
+    """IDEAS N step 0 on the provisioning path: the flag follows the flow.
+
+    A seeded conversational flow (real steps) advertises ``steps``; a scratch
+    per-type default has no steps and advertises nothing — no seed from the
+    registry can make those two disagree.
+    """
+    monkeypatch.setattr(settings, "vault_master_key", None)
+
+    conversation = _install_provisioning(monkeypatch, seed=get_template("quiz").seed)
+    quiz_row = asyncio.run(conversation[2]())
+    assert quiz_row.config.flow["active_modules"] == ["steps"]
+
+    scratch = _install_provisioning(monkeypatch, seed=None, bot_type=BotType.ECHO)
+    echo_row = asyncio.run(scratch[2]())
+    assert echo_row.config.flow["active_modules"] == []

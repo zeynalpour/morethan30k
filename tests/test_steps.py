@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from tme.core.i18n import localize
+from tme.modules import normalize_flow
 from tme.schemas.bot_config import BotConfigSchema
 from tme.services import steps as steps_module
 from tme.services.steps import (
@@ -150,6 +151,25 @@ class TestParseSteps:
     def test_non_list_steps_is_ignored(self) -> None:
         cfg = BotConfigSchema.model_validate({"active_modules": ["steps"], "steps": "oops"})
         assert parse_steps(cfg) == []
+
+    def test_module_registry_derivation_keeps_the_gate_intact(self) -> None:
+        """IDEAS N step 0 changed how the flag is SET, never what the gate DOES.
+
+        The engine still requires the flag AND usable step data: a flow that
+        carries steps but no ``active_modules`` entry stays inert (derivation
+        happens on write, not read), and the flag alone still enables nothing.
+        """
+        data_only = BotConfigSchema.model_validate({"steps": [{"id": "a", "prompt": "p"}]})
+        assert parse_steps(data_only) == []
+
+        flag_only = BotConfigSchema.model_validate({"active_modules": ["steps"]})
+        assert parse_steps(flag_only) == []
+
+        # What a write actually persists: the flag derived from the data.
+        normalized = BotConfigSchema.model_validate(
+            normalize_flow({"bot_type": "generic", "steps": [{"id": "a", "prompt": "p"}]})
+        )
+        assert [s.id for s in parse_steps(normalized)] == ["a"]
 
     def test_start_index_parsing(self) -> None:
         assert parse_start_index("step:0") == 0

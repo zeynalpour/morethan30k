@@ -67,6 +67,10 @@ export interface BotConfigFlow {
   version?: number;
   welcome_message?: string;
   menu_buttons?: MenuButtonData[];
+  // BOOKKEEPING, not a setting (IDEAS N step 0): the backend DERIVES this from
+  // the flow's own content on every write (tme.modules.normalize_flow), so a
+  // bot can never advertise a module its flow does not contain. The dashboard
+  // does not send it — see ModulesPanel for what the owner actually sees.
   active_modules?: string[];
   fallback_message?: string;
   greeting?: string;
@@ -78,6 +82,20 @@ export interface BotConfigFlow {
   main_language?: string | null;
   steps?: FlowStepData[];
   template?: { id: string; version: number };
+}
+
+// IDEAS N step 0 — one engine capability from the in-code module registry,
+// resolved against a single bot. `active` is DERIVED by the backend from the
+// flow the engine executes; the dashboard only renders it (never sends it
+// back), so the toggle can never disagree with the bot's actual flow.
+export interface ModuleSummary {
+  id: string;
+  version: number;
+  display_name: string;
+  description: string;
+  config_keys: string[];
+  dependencies: string[];
+  active: boolean;
 }
 
 // S2.3 — a registry template card (latest version, no seed data).
@@ -154,6 +172,9 @@ export const api = {
   // Permanent removal (archive cleanup for bots deleted in BotFather).
   deleteBot: (botId: number) =>
     request<void>(`/api/bots/${botId}`, { method: "DELETE" }),
+  // IDEAS N step 0 — the module registry, resolved against this bot's flow
+  // (read-only: `active` is derived from the flow, never typed by the owner).
+  listModules: (botId: number) => request<ModuleSummary[]>(`/api/bots/${botId}/modules`),
   // S2.3 — template registry + re-clone ("Reset to template").
   listTemplates: () => request<TemplateSummary[]>("/api/templates"),
   getBotTemplate: (botId: number) =>

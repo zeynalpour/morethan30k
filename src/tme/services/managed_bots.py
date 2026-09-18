@@ -25,6 +25,7 @@ from tme.core.cache import invalidate_bot_config, invalidate_bot_config_hash, se
 from tme.core.logging import get_logger
 from tme.database.engine import session_scope
 from tme.database.models import Bot as BotModel, BotConfig, BotType, User
+from tme.modules import normalize_flow
 from tme.schemas.bot_config import (
     BotConfigSchema,
     BotConfigUnion,
@@ -94,13 +95,24 @@ async def provision_managed_bot(
     place). ``bot_type`` selects the config variant; the default is a generic
     tenant bot.
 
+    S0.3 follow-up (**vault-only writes**): when ``VAULT_MASTER_KEY`` is set the
+    token is written to the secret vault and ``bots.token`` is persisted as
+    NULL — the transitional plaintext column is never populated by a
+    provisioning that happened after activation. Keyless deployments keep the
+    old behaviour exactly (plaintext column + the loud warning) because the
+    vault cannot operate without the key. Read paths tolerate both: the one
+    accessor is :func:`tme.services.vault.resolve_bot_token(s)` and the owner's
+    per-stack backfill clears any legacy plaintext.
+
     S2.2: ``seed`` is the template's flow (``TemplateSpec.seed`` via
     :func:`tme.templates.get_template`). When provided it **replaces** the
     bare per-type default entirely — and the row's ``bot_type`` is taken from
     the seed's own discriminator (never from ``bot_type``), keeping the
     row/flow invariant a template cannot violate. ``seed=None`` (API/legacy
     callers) keeps today's ``_default_config_for(bot_type)`` behaviour;
-    ``_default_config_for`` stays until S2.3 collapses the two sources.
+    ``_default_config_for`` stays until S2.3 collapses the two sources. Either
+    way the flow's ``active_modules`` flag is derived from the persisted flow
+    (IDEAS N step 0), never copied from the seed by hand.
     """
     tenant_bot = get_tenant_bot(token)
 
@@ -139,7 +151,13 @@ async def provision_managed_bot(
             )
         if bot_row is None:
             bot_row = BotModel(
-                token=token,
+                # VAULT-ONLY WRITE (S0.3 follow-up): with the master key
+                # present the token is written to the vault below and the
+                # transitional plaintext column stays NULL — a bot created
+                # after activation must not carry a second, unencrypted copy.
+                # Without the key the vault cannot operate, so this is exactly
+                # today's plaintext behaviour (plus the warning above).
+                token=None if vault_on else token,
                 token_hash=token_hash(token),
                 telegram_bot_id=telegram_bot_id,
                 username=username,
@@ -148,7 +166,9 @@ async def provision_managed_bot(
                 is_active=True,
                 bot_type=effective_type,
             )
-            bot_row.config = BotConfig(flow=default_config.model_dump())
+            # IDEAS N step 0: the module flag is DERIVED from the flow that is
+            # about to be persisted, never taken from the seed by hand.
+            bot_row.config = BotConfig(flow=normalize_flow(default_config.model_dump()))
             session.add(bot_row)
             await session.flush()  # assign bot_row.id for the vault FK
             if vault_on:
@@ -156,6 +176,11 @@ async def provision_managed_bot(
         else:
             bot_row.username, bot_row.title, bot_row.is_active = username, title, True
             bot_row.token_hash = token_hash(token)
+            # A legacy row's existing plaintext is left alone on purpose: it
+            # is cleared by the owner's verified per-stack backfill run
+            # (scripts/vault_backfill.py --clear-plaintext, which proves a
+            # decrypt round-trip first), never by re-provisioning. What this
+            # path must never do is ADD a plaintext copy once the vault is on.
             if vault_on:
                 await store_bot_token(session, bot_id=bot_row.id, token=token)
         await session.flush()
@@ -215,9 +240,13 @@ async def reclone_bot(
             registry bug — S2.1's import-time loop pins the other way).
 
     Idempotent: re-cloning the same version twice persists the same flow.
+
+    The rebuilt flow's ``active_modules`` is **derived** from that same flow
+    (IDEAS N step 0) — a re-clone can therefore never leave a bot advertising
+    a module the applied template does not contain.
     """
     old_flow = dict(bot_row.config.flow) if bot_row.config is not None else {}
-    new_flow = clone_flow(spec, old_flow, preserve)
+    new_flow = normalize_flow(clone_flow(spec, old_flow, preserve))
 
     # Revalidate the rebuilt flow through the same union the runtime parses
     # with — provenance stamp and preserved keys ride `extra="allow"`/typed

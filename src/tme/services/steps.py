@@ -13,11 +13,17 @@ module interprets it:
 * delivers the collected answers to the bot's owner on completion.
 
 Everything is inert unless the flow opts in — ``active_modules`` must contain
-``"steps"`` **and** ``steps`` must parse into at least one usable step. Bots
-without that keep the plain welcome/menu/fallback behaviour untouched.
+``"steps"`` **and** ``steps`` must parse into at least one usable step. The
+flag is not a setting: it is DERIVED from that same flow data by the module
+registry (:func:`tme.modules.normalize_flow`), so a bot cannot advertise the
+capability without containing it. Bots without that keep the plain
+welcome/menu/fallback behaviour untouched.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -35,6 +41,8 @@ from tme.schemas.bot_config import BotConfigUnion
 logger = get_logger(__name__)
 
 #: Flow module gate — a bot only runs steps when this is in ``active_modules``.
+#: Since IDEAS N step 0 the value is DERIVED from the flow's own data by the
+#: module registry (:mod:`tme.modules`), never typed by an owner.
 STEP_MODULE = "steps"
 
 #: Menu buttons that start a flow: ``step:{index}``.
@@ -105,18 +113,17 @@ class FlowState(BaseModel):
 # --------------------------------------------------------------------------- #
 # Parsing
 # --------------------------------------------------------------------------- #
-def parse_steps(config: BotConfigUnion) -> list[FlowStep]:
-    """Extract a usable flow from a bot config, or ``[]`` when it has none.
+def parse_step_data(flow: Mapping[str, Any]) -> list[FlowStep]:
+    """Extract the steps a raw flow's **data** declares, or ``[]``.
+
+    No module gate here: this is the containment question ("does this flow
+    hold steps at all?"), which the module registry's ``steps`` detector
+    answers from the flow itself. :func:`parse_steps` applies the engine's
+    gate (the derived ``active_modules`` flag) on top.
 
     Malformed entries are dropped with a warning instead of raising: a broken
     template must not break the tenant's other behaviour.
     """
-    flow = config.model_dump()
-
-    modules = flow.get("active_modules") or []
-    if STEP_MODULE not in modules:
-        return []
-
     raw_steps = flow.get("steps") or []
     if not isinstance(raw_steps, list):
         logger.warning("Flow has non-list 'steps' payload — ignoring")
@@ -130,6 +137,34 @@ def parse_steps(config: BotConfigUnion) -> list[FlowStep]:
             logger.warning("Dropping malformed flow step %r: %s", raw, exc)
 
     return steps
+
+
+def has_step_data(flow: Mapping[str, Any]) -> bool:
+    """True when a flow contains at least one usable step (no gate).
+
+    The module registry's detector for ``steps``: the capability is present
+    exactly when the flow's data says so, which is what makes the
+    ``active_modules`` flag derivable instead of typed.
+    """
+    return bool(parse_step_data(flow))
+
+
+def parse_steps(config: BotConfigUnion) -> list[FlowStep]:
+    """Extract a usable flow from a bot config, or ``[]`` when it has none.
+
+    The engine gate is unchanged (nothing runs a flow the bot has not opted
+    into): the flow must carry the ``steps`` module flag AND at least one
+    usable step. The flag is now *derived* from the same data by
+    :func:`tme.modules.normalize_flow` on every write, so in practice a flow
+    with steps is a step bot and a flow without them is not.
+    """
+    flow = config.model_dump()
+
+    modules = flow.get("active_modules") or []
+    if STEP_MODULE not in modules:
+        return []
+
+    return parse_step_data(flow)
 
 
 def is_step_bot(config: BotConfigUnion) -> bool:
