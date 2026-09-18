@@ -325,6 +325,20 @@ flag from the bot's actual flow — the flag becomes bookkeeping, not a setting.
 4. The store itself: browse, install, rate, pay (`purchases`/`credit_ledger`),
    and revenue share (G3) — Phase 7 territory.
 
+**A module manifest is a tool manifest (owner's framing, Sep 2026).** Once a
+model is in the loop, modules *are* tools: each is a capability with a name, a
+description, a parameter schema, an executor and a scope. Design the registry so
+one definition serves all three consumers - the dashboard, the engine, and the
+model's tool list - and the agent story costs nothing extra later. Two kinds of
+module, one registry: **pipeline modules** (`steps`: a deterministic sequence the
+owner authors) and **tool modules** (`ai_reply`, `translate`, `rag`: capabilities
+the model chooses at runtime). A module can be both - a step that calls a tool.
+Adopt **MCP** as the outbound tool interface, so third-party tools plug in on the
+author's own infrastructure without their code entering the engine, which is the
+store boundary again in protocol form. Tools also need scoping: what a tool may
+read or write, and what a call costs - where metering (G1/G2) meets the
+declarative-not-code rule.
+
 **Keystones this section depends on:** C1/C1b (node graph, so a module is node
 types rather than new engine branches), D1–D3 (the AI gateway is the first
 module worth selling), B7/B8 (registry + marketplace spine), F5 (review gate),
