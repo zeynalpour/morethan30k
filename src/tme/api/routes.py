@@ -71,12 +71,21 @@ class ModuleSummary(BaseModel):
     ``active`` is **derived** from the flow the engine executes (the registry's
     detector reads the flow's own data), never from the stored
     ``active_modules`` flag — the dashboard renders it as a read-only toggle.
+
+    ``authoring_hint`` is the registry's statement of how the owner creates
+    this module's data. It is served in BOTH states on purpose, and the panel
+    renders the module's authoring control in both states too: a derived flag
+    may gate EXECUTION (does the engine run this module), never AUTHORING (the
+    controls that produce the data the flag is derived from). Gating the
+    authoring control on ``active`` is circular — zero steps ⇒ module off ⇒ no
+    Add step control — and made deleting the last step a one-way door.
     """
 
     id: str
     version: int
     display_name: str
     description: str
+    authoring_hint: str
     config_keys: list[str]
     dependencies: list[str]
     active: bool
@@ -406,6 +415,12 @@ async def list_bot_modules(bot_id: int, auth: int = Depends(_require_auth)) -> l
     the flow (add/remove its config — e.g. the ``steps`` array), never by
     typing a module name.
 
+    AUTHORING-GATE RULE (IDEAS N step 0): the response deliberately carries
+    ``authoring_hint`` for a module that reads ``active: false`` as well — the
+    dashboard surfaces the module's authoring control in that state, because
+    the derived flag may gate execution but never the authorship that creates
+    the data it is derived from.
+
     Owner-scoped like every other ``/api`` route.
     """
     async with session_scope() as session:
@@ -420,6 +435,9 @@ async def list_bot_modules(bot_id: int, auth: int = Depends(_require_auth)) -> l
             version=spec.version,
             display_name=spec.display_name,
             description=spec.description,
+            # Served even when `active` is False: the hint is how the dashboard
+            # offers the authoring control for a module that reads off.
+            authoring_hint=spec.authoring_hint,
             config_keys=list(spec.config_keys),
             dependencies=list(spec.dependencies),
             active=is_active(spec.id, flow),
