@@ -154,6 +154,7 @@ S3.4 LLM co-pilot (stretch).
 ## Phase 7 — Ecosystem & monetization
 
 - ⚪ Template marketplace + clone/export/import configs.
+- ⚪ **Modules, skills and the store** - bots enable engine capabilities from a module list (ai_reply, translate, forward_to_owner, ...), and authors publish templates, skills and modules publicly, free or paid. A module is a declarative manifest plus an engine capability - **never third-party code running inside the engine**. See `IDEAS.md` N.
 - ⚪ Per-bot analytics (active users, messages) — also feeds the dashboard.
 - ⚪ Credit packs via Telegram Stars, paid templates, teams/collab. 💡
   *Plugs straight into the metering service.*
